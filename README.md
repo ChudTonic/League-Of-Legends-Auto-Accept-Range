@@ -12,6 +12,8 @@
 
 ---
 
+![Chud dashboard — Auto-Accept and Auto-Range armed, Camera Assist ready](docs/screenshot-dashboard.png)
+
 ## ✨ What it does
 
 | Tool | What it does | Risk |
@@ -21,7 +23,10 @@
 | 🎥 **Camera Assist** *(experimental)* | Spots your champion's health bar on screen and recenters the camera when you drift. | **High** — screen capture + synthetic input. |
 
 Everything runs in one process with a neon-glass dashboard, system tray support, and
-live client detection.
+live client detection. There's also a built-in **Profile** screen pulled live from the
+League Client — rank, recent performance, champion pool, and match history:
+
+![Chud profile screen — ranked stats, recent performance, and match history synced from the League Client](docs/screenshot-profile.png)
 
 > 🧪 **Camera Assist is experimental.** The health-bar detection works on the test
 > setups it was tuned on, but hasn't been broadly validated across resolutions, skins,
