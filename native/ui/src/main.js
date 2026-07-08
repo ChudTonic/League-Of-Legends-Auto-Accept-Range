@@ -296,7 +296,7 @@ function renderActivity() {
 
 // ── Diagnostics ───────────────────────────────────────────────────────────────
 const DIAG_FALLBACK = {
-  app: { name: "Chud", version: "1.1.0", build: "browser" },
+  app: { name: "Chud", version: "1.0.0", build: "browser" },
   system: { admin: false, os: "windows", arch: "x86_64" },
   lcu: { clientOnline: false, authFound: false, endpoint: "", phase: "" },
   tools: { autoAccept: false, autoRange: false, cameraAssist: false, injectionBlocked: false, injectionAck: false },
