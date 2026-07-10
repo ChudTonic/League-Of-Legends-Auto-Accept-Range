@@ -49,6 +49,18 @@ impl SkinInjector {
     /// and pass their resulting folder names directly — `injector.rs`
     /// doesn't hold a reference to party/trigger internals, so a callback
     /// shape would just recreate that coupling here instead of removing it.
+    ///
+    /// CLEAN ORDERING CONTRACT: `clean_mods_dir` only runs here when
+    /// `extra_mod_names` is empty. When the caller passes extras, it means
+    /// those folders are ALREADY staged in `mods_dir` for this exact
+    /// overlay — cleaning here would wipe them, contradicting the promise
+    /// above that the caller's pre-extracted folders survive. So cleaning
+    /// becomes the CALLER's job in that case: clean `mods_dir` FIRST, then
+    /// stage `extra_mod_names`, then call this. `trigger.rs::
+    /// run_custom_mod_injection` and `swiftplay.rs::extract_tracked_skins`
+    /// both do exactly that. This lets one overlay carry the union of a
+    /// primary skin plus every pre-staged extra, instead of the extras being
+    /// silently deleted by an unconditional clean here.
     pub fn inject_skin(
         &self,
         skin_name: &str,
@@ -76,7 +88,14 @@ impl SkinInjector {
         log_info!("[INJECT] Using skin file: {}", zp.display());
 
         let clean_start = Instant::now();
-        storage::clean_mods_dir(&self.mods_dir);
+        if should_clean_mods_dir(extra_mod_names) {
+            storage::clean_mods_dir(&self.mods_dir);
+        } else {
+            log_info!(
+                "[INJECT] Skipping mods-dir clean - {} extra mod(s) already staged by caller",
+                extra_mod_names.len()
+            );
+        }
         storage::clean_overlay_dir(&self.overlay_dir);
         log_info!("[INJECT] Directory cleanup took {:.2}s", clean_start.elapsed().as_secs_f64());
 
@@ -164,6 +183,13 @@ impl SkinInjector {
     }
 }
 
+/// Whether `inject_skin` should wipe `mods_dir` before extracting the
+/// primary skin — see `inject_skin`'s "CLEAN ORDERING CONTRACT" doc comment.
+/// Only cleans when there are no caller-staged extras to preserve.
+fn should_clean_mods_dir(extra_mod_names: &[String]) -> bool {
+    extra_mod_names.is_empty()
+}
+
 fn strip_trailing_skin_id(skin_name: &str) -> String {
     let parts: Vec<&str> = skin_name.split_whitespace().collect();
     if let Some(last) = parts.last() {
@@ -212,5 +238,35 @@ mod tests {
         assert_eq!(strip_trailing_skin_id("Elementalist Lux 99007"), "Elementalist Lux");
         assert_eq!(strip_trailing_skin_id("Elementalist Lux"), "Elementalist Lux");
         assert_eq!(strip_trailing_skin_id("K/DA 100"), "K/DA");
+    }
+
+    #[test]
+    fn should_clean_mods_dir_only_when_no_extras_to_preserve() {
+        assert!(should_clean_mods_dir(&[]));
+        assert!(!should_clean_mods_dir(&["CHUD-Map".to_string()]));
+    }
+
+    /// A temp dir with a pre-staged extra mod folder must survive the
+    /// conditional clean when extras are present (multi-mod overlay case:
+    /// custom mod + category mods, or Swiftplay's N-champion overlay), and
+    /// must still be wiped in the plain single-skin case (no extras) so
+    /// stale mods from a previous game don't leak into a fresh overlay.
+    #[test]
+    fn clean_ordering_preserves_staged_extras_but_still_wipes_stale_mods_alone() {
+        let root = std::env::temp_dir().join("chud_injector_test_clean_ordering");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("CHUD-ExtraMod")).unwrap();
+
+        if should_clean_mods_dir(&["CHUD-ExtraMod".to_string()]) {
+            storage::clean_mods_dir(&root);
+        }
+        assert!(root.join("CHUD-ExtraMod").is_dir(), "staged extra must survive when extras are present");
+
+        if should_clean_mods_dir(&[]) {
+            storage::clean_mods_dir(&root);
+        }
+        assert!(!root.join("CHUD-ExtraMod").is_dir(), "stale mod must be wiped when there are no extras to preserve");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

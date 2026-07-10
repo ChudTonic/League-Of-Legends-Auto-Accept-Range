@@ -102,6 +102,10 @@ pub struct SkinsCfg {
     /// Empty = unset; `CHUD_RELAY_URL` env overrides at the use site (party
     /// mode is gated on this until the relay worker is deployed).
     pub party_relay_url: String,
+    /// `GameMonitor`'s unconditional auto-resume safety timeout — never
+    /// leave the game suspended longer than this even if `runoverlay` never
+    /// starts. `GameMonitor::set_auto_resume_timeout` clamps 1..=180s.
+    pub monitor_auto_resume_timeout_secs: f64,
 }
 
 impl Default for SkinsCfg {
@@ -112,6 +116,7 @@ impl Default for SkinsCfg {
             enabled: false,
             auto_download_skins: true,
             party_relay_url: String::new(),
+            monitor_auto_resume_timeout_secs: 60.0,
         }
     }
 }

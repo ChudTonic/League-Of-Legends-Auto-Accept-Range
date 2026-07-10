@@ -575,6 +575,10 @@ pub fn run() {
                 skins::paths::skins_dir(),
                 skins::paths::injection_overlay_dir(),
             ));
+            // Apply the configured auto-resume safety timeout (defaults to
+            // `GameMonitor`'s own 60s default; clamped 1..=180s either way).
+            injection_manager
+                .set_auto_resume_timeout(st.config.lock_safe().skins.monitor_auto_resume_timeout_secs);
             let bridge_handle = skins::bridge::spawn(
                 handle.clone(),
                 st.skins.clone(),

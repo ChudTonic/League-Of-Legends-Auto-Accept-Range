@@ -17,6 +17,8 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -24,6 +26,7 @@ use regex::Regex;
 use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sysinfo::{ProcessesToUpdate, System};
 
 use crate::lcu::{self, Auth};
 use crate::LockExt;
@@ -44,6 +47,52 @@ pub const LCU_SKIN_SCRAPER_TIMEOUT_S: f64 = 3.0;
 fn is_swiftplay_mode_str(game_mode: &str) -> bool {
     let upper = game_mode.to_uppercase();
     SWIFTPLAY_MODES.contains(&upper.as_str())
+}
+
+// ---------------------------------------------------------------------
+// League install/game directory discovery — feeds
+// `injection::InjectionManager::set_game_dir`, which `mkoverlay`'s
+// `--game:<path>` argument needs (`injection/game/game_detector.py` was never
+// ported as its own module; this is that lookup). Mirrors `lcu::find_auth`'s
+// process scan (same running `LeagueClientUx.exe`, same
+// `--install-directory=` cmdline fallback) rather than reusing it directly —
+// `lcu.rs` only exposes lockfile auth, not the bare install directory.
+// ---------------------------------------------------------------------
+
+fn install_dir_from_cmd(cmd: &[OsString]) -> Option<PathBuf> {
+    for arg in cmd {
+        let s = arg.to_string_lossy();
+        if let Some(rest) = s.strip_prefix("--install-directory=") {
+            return Some(PathBuf::from(rest.trim_matches('"')));
+        }
+    }
+    None
+}
+
+/// Find the running League Client and resolve its install directory's
+/// `Game` subfolder. `None` when the client isn't running, its install dir
+/// can't be determined, or `Game` doesn't exist yet (client running but the
+/// game itself isn't installed/updated) — callers must treat `None` as
+/// "injection unavailable right now", not an error.
+pub fn resolve_game_dir() -> Option<PathBuf> {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    for proc in sys.processes().values() {
+        if proc.name().to_string_lossy().to_lowercase() != "leagueclientux.exe" {
+            continue;
+        }
+        let install_dir = proc
+            .exe()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .or_else(|| install_dir_from_cmd(proc.cmd()));
+        if let Some(install_dir) = install_dir {
+            let game_dir = install_dir.join("Game");
+            if game_dir.is_dir() {
+                return Some(game_dir);
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------

@@ -8,32 +8,21 @@
 //! (action-based PATCH falling back to `my-selection`), and the base-skin
 //! confirmation telemetry (`injection::base_skin_tracker`).
 //!
-//! FLAGGED FOR THE LEAD — a structural gap found while porting this module:
-//! Python's `_inject_custom_mod` ran its own clean+extract+
-//! `OverlayManager.mk_run_overlay` sequence directly against
-//! `SkinInjector.overlay_manager`, entirely bypassing `SkinInjector.inject_skin`.
-//! That gave it a low-level "run an overlay for an arbitrary pre-built list of
-//! mod folders, with no forced primary skin" entry point. S3's Rust port only
-//! exposes `InjectionManager::inject_skin_immediately(skin_name, ...,
-//! extra_mod_names)`, which ALWAYS resolves+extracts `skin_name` as the
-//! primary mod via `SkinInjector::inject_skin`. That function's own
-//! implementation calls `storage::clean_mods_dir` UNCONDITIONALLY before
-//! extracting its primary skin — which wipes any `extra_mod_names` folders a
-//! caller (this module) pre-extracted into `mods_dir`, even though
-//! `injector.rs`'s own doc comment on `inject_skin` describes exactly that
-//! calling convention ("the caller ... has already prepared those mod
-//! folders ... and pass their resulting folder names directly"). So today,
-//! `extra_mod_names` folders other than the just-resolved primary are
-//! extracted by this module correctly, but then silently deleted by
-//! `clean_mods_dir` before `mk_run_overlay` runs. This module still follows
-//! the documented contract (it's the only public entry point that exists),
-//! but multi-mod overlays (custom skin mod + map/font/announcer/other, or a
-//! custom mod on an owned skin with no base extraction) will not include
-//! everything until `injection/injector.rs`/`storage.rs` (out of this
-//! milestone's file scope) gets a real fix — e.g. a new
-//! `InjectionManager::inject_mod_folders(&[String]) -> bool` that skips the
-//! primary-skin resolve+extract entirely, or reordering `clean_mods_dir` to
-//! run before `extra_mod_names` are extracted rather than after.
+//! RECONCILED (was "FLAGGED FOR THE LEAD"): Python's `_inject_custom_mod` ran
+//! its own clean+extract+`OverlayManager.mk_run_overlay` sequence directly
+//! against `SkinInjector.overlay_manager`, bypassing `SkinInjector.inject_skin`
+//! entirely. S3's Rust port only exposes `InjectionManager::
+//! inject_skin_immediately(skin_name, ..., extra_mod_names)`, which ALWAYS
+//! resolves+extracts `skin_name` as the primary mod via `SkinInjector::
+//! inject_skin` — and that function used to call `storage::clean_mods_dir`
+//! UNCONDITIONALLY before extracting its primary skin, wiping any
+//! `extra_mod_names` folders this module had just pre-extracted into
+//! `mods_dir`. Fixed per `injector.rs::inject_skin`'s "CLEAN ORDERING
+//! CONTRACT" doc comment: `inject_skin` now only cleans when it has no
+//! extras to preserve, so `run_custom_mod_injection` below cleans `mods_dir`
+//! itself BEFORE extracting the custom mod / category mods (see the
+//! `storage::clean_mods_dir` call at its top) — the union of primary +
+//! extras now survives into the overlay.
 
 #![allow(dead_code)] // consumed by ticker.rs; S9 troubleshooting UI
 
@@ -86,6 +75,16 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         return;
     };
     let bridge = app_state.skins_bridge.lock_safe().clone();
+
+    // Resolve the League "Game" directory lazily and set it every trigger
+    // (cheap, and the install dir can change between client launches) —
+    // `mkoverlay`'s `--game:<path>` is unset without it, making injection a
+    // silent no-op.
+    let Some(game_dir) = lcu_ext::resolve_game_dir() else {
+        log_warn!("[INJECT] Could not resolve League game directory (client not running?) - skipping trigger for {name}");
+        return;
+    };
+    injection.set_game_dir(game_dir);
 
     // Mark that we've processed the last hovered skin (first effectful line
     // of Python's `trigger_injection`, past its `if not name: return` guard).
@@ -387,6 +386,13 @@ async fn run_custom_mod_injection(
 ) {
     let mods_dir = paths::injection_mods_dir();
     let cache_dir = paths::injection_extract_cache_dir();
+    // Clean BEFORE any extraction (custom mod, category mods, or the primary
+    // `inject_skin_immediately` resolves below) so the mods dir ends up with
+    // the UNION of everything this overlay needs — `SkinInjector::
+    // inject_skin` itself skips its own clean once it sees `extra_names` is
+    // non-empty (see its "CLEAN ORDERING CONTRACT" doc comment), so this is
+    // the one clean that runs for this whole overlay.
+    storage::clean_mods_dir(&mods_dir);
     let mut extra_names = Vec::new();
     let mut labels = Vec::new();
     let has_custom_skin_folder = !custom_mod.relative_path.is_empty() && !custom_mod.mod_path.is_empty();

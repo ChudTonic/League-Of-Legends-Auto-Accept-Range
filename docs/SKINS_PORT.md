@@ -187,8 +187,18 @@ Open reconciliation items (from S2/S3 agent notes, address before S10):
 - phase.rs: late-lock bootstrap on mid-ChampSelect start NOT ported; Swiftplay skips
   champ-select reset not honored (game-mode detect runs after reset); no distinct
   champion-exchange event (emits ChampionLocked). InjectionManager: `update_skin`
-  secondary entry not ported. GameMonitor auto-resume timeout defaults 60s — wire
-  config `monitor_auto_resume_timeout` at InjectionManager construction.
+  secondary entry not ported. ~~GameMonitor auto-resume timeout defaults 60s — wire
+  config `monitor_auto_resume_timeout` at InjectionManager construction.~~ DONE
+  (reconciliation pass): `config::SkinsCfg::monitor_auto_resume_timeout_secs`
+  (default 60.0) is now applied via `InjectionManager::set_auto_resume_timeout`
+  in `lib.rs`'s `setup()`, right after construction.
+- `historic_skin_id: Option<i64>` can't represent the Python "path:<rel>" custom-mod
+  historic value — historic-mode auto-reapply of a CUSTOM mod is not ported (only
+  skin/chroma-ID historic works). Needs `historic_skin_id` → an enum in a future pass.
+- Late-lock bootstrap: if the app starts mid-ChampSelect after the user already
+  locked, the phase engine doesn't proactively fetch the session to detect the
+  existing lock (only WS-fed session deltas trigger it). Port
+  `lcu_monitor_thread.py::_bootstrap_late_locked_champion` in a future pass.
 
 - **S1 foundation**: paths/slog/config/state/special + Cargo deps + `skins::mod` skeleton — compiles.
 - **S2 LCU + phase**: lcu_ext, phase actor, ws fan-out — compiles + unit tests for map_cells/compute_locked.

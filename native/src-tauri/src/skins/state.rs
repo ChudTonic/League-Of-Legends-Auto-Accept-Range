@@ -35,13 +35,12 @@ pub struct CustomModSelection {
 ///
 /// MIGRATED (S5) from `bridge::ModSelection`/`ModSelections`: S4's own doc
 /// comment flagged that those belonged here but `state.rs` wasn't in S4's
-/// file scope. `state.rs` is S5's to edit, so the fields land here now.
-/// `bridge::BridgeContext::mod_selections` (written by `bridge/handlers.rs`,
-/// S6 territory this round) still exists and is NOT wired to this field yet
-/// — see the `TODO(seam)` comments in `trigger.rs` at every read site; a
-/// follow-up must make `bridge/handlers.rs` write here instead (or in
-/// addition) so a bridge-driven category-mod selection is visible to the
-/// injection trigger.
+/// file scope. `state.rs` is S5's to edit, so the fields landed here, and a
+/// reconciliation pass afterward made `bridge/handlers.rs`'s `select-map`/
+/// `select-font`/`select-announcer`/`select-other` handlers write straight
+/// into `SkinsShared::category_mods` (the bridge-local `ModSelection`/
+/// `ModSelections` types were removed — nothing else read them), so
+/// `trigger.rs`'s injection trigger now sees real bridge-driven selections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CategoryModSelection {
     pub mod_name: String,

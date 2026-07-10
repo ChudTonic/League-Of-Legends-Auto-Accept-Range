@@ -37,11 +37,11 @@ use crate::skins::injection::{base_skin_tracker, zips};
 use crate::skins::lcu_ext::{self, ChampionSkinCache};
 use crate::skins::paths;
 use crate::skins::slog::{log_error, log_info, log_warn};
-use crate::skins::state::CustomModSelection;
+use crate::skins::state::{CategoryModSelection, CustomModSelection};
 use crate::LockExt;
 
 use super::protocol::{self, Inbound, InboundMessage};
-use super::{BridgeContext, ModSelection};
+use super::BridgeContext;
 
 // ---------------------------------------------------------------------
 // Entry point
@@ -509,12 +509,13 @@ fn handle_dismiss_historic(ctx: &BridgeContext) {
 // ---------------------------------------------------------------------
 // Map / font / announcer / other mod selection
 //
-// DEVIATION (flagged for the lead): these selections belong conceptually in
-// `SkinsShared` next to `selected_custom_mod`, but `state.rs` isn't in this
-// milestone's file scope, so `BridgeContext::mod_selections` (defined in
-// `bridge::mod`) holds them instead. S5's injection trigger will need read
-// access to them as `extra_mod_names` — recommend migrating into
-// `SkinsShared` in a follow-up.
+// MIGRATED (S5 follow-up): these selections used to live in a bridge-local
+// `BridgeContext::mod_selections` (`bridge::ModSelections`) because
+// `state.rs` wasn't in S4's file scope. They now write straight into
+// `ctx.skins.shared.lock_safe().category_mods` (`state::CategoryModSelections`)
+// — the field `trigger.rs`'s injection trigger actually reads as
+// `extra_mod_names` — so a bridge-driven selection is visible to injection
+// without a second copy to keep in sync.
 // ---------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -578,11 +579,11 @@ fn category_entries_json(entries: &[CategoryModEntry]) -> Vec<Value> {
 async fn select_single_slot_mod(ctx: &BridgeContext, slot: Slot, mod_id: Option<String>, mod_data: Option<Value>) {
     let Some(mod_id) = mod_id else {
         let had = {
-            let mut sel = ctx.mod_selections.lock_safe();
+            let mut shared = ctx.skins.shared.lock_safe();
             let field = match slot {
-                Slot::Map => &mut sel.map,
-                Slot::Font => &mut sel.font,
-                Slot::Announcer => &mut sel.announcer,
+                Slot::Map => &mut shared.category_mods.map,
+                Slot::Font => &mut shared.category_mods.font,
+                Slot::Announcer => &mut shared.category_mods.announcer,
             };
             field.take().is_some()
         };
@@ -609,18 +610,18 @@ async fn select_single_slot_mod(ctx: &BridgeContext, slot: Slot, mod_id: Option<
     let source = ctx.mod_storage.mods_root().join(entry.path.replace('/', "\\"));
     let Some(extracted) = extract_selected_mod(ctx, &source) else { return };
 
-    let selection = ModSelection {
+    let selection = CategoryModSelection {
         mod_name: entry.name.clone(),
         mod_path: extracted.mod_path,
         mod_folder_name: extracted.mod_folder_name,
         relative_path: extracted.relative_path,
     };
     {
-        let mut sel = ctx.mod_selections.lock_safe();
+        let mut shared = ctx.skins.shared.lock_safe();
         let field = match slot {
-            Slot::Map => &mut sel.map,
-            Slot::Font => &mut sel.font,
-            Slot::Announcer => &mut sel.announcer,
+            Slot::Map => &mut shared.category_mods.map,
+            Slot::Font => &mut shared.category_mods.font,
+            Slot::Announcer => &mut shared.category_mods.announcer,
         };
         *field = Some(selection.clone());
     }
@@ -655,11 +656,11 @@ async fn handle_select_other(ctx: &BridgeContext, other_id: Option<String>, othe
     if action == "deselect" || other_id.is_none() {
         let removed_path = other_data.as_ref().and_then(|d| d.get("id")).and_then(Value::as_str).map(String::from);
         {
-            let mut sel = ctx.mod_selections.lock_safe();
+            let mut shared = ctx.skins.shared.lock_safe();
             if let Some(rp) = &removed_path {
-                sel.others.retain(|m| &m.relative_path != rp);
+                shared.category_mods.others.retain(|m| &m.relative_path != rp);
             } else {
-                sel.others.clear();
+                shared.category_mods.others.clear();
             }
         }
         rebuild_other_historic(ctx);
@@ -685,13 +686,13 @@ async fn handle_select_other(ctx: &BridgeContext, other_id: Option<String>, othe
     let Some(extracted) = extract_selected_mod(ctx, &source) else { return };
 
     let selection =
-        ModSelection { mod_name, mod_path: extracted.mod_path, mod_folder_name: extracted.mod_folder_name, relative_path: extracted.relative_path };
+        CategoryModSelection { mod_name, mod_path: extracted.mod_path, mod_folder_name: extracted.mod_folder_name, relative_path: extracted.relative_path };
 
     let already_selected = {
-        let mut sel = ctx.mod_selections.lock_safe();
-        let exists = sel.others.iter().any(|m| m.relative_path == selection.relative_path);
+        let mut shared = ctx.skins.shared.lock_safe();
+        let exists = shared.category_mods.others.iter().any(|m| m.relative_path == selection.relative_path);
         if !exists {
-            sel.others.push(selection.clone());
+            shared.category_mods.others.push(selection.clone());
         }
         exists
     };
@@ -707,7 +708,7 @@ async fn handle_select_other(ctx: &BridgeContext, other_id: Option<String>, othe
 /// `others` selection, keyed by each path's leading segment (ported from
 /// `_handle_select_other`'s `by_cat` rebuild).
 fn rebuild_other_historic(ctx: &BridgeContext) {
-    let others = ctx.mod_selections.lock_safe().others.clone();
+    let others = ctx.skins.shared.lock_safe().category_mods.others.clone();
     let mut h = historic::load_mod_historic();
     for cat in historic::MOD_HISTORIC_CATEGORIES {
         h.clear_category(cat);
@@ -770,11 +771,11 @@ async fn handle_request_single_slot_category(ctx: &BridgeContext, slot: Slot, re
 
     if let Some(hp) = &historic_path {
         let already = {
-            let sel = ctx.mod_selections.lock_safe();
+            let shared = ctx.skins.shared.lock_safe();
             match slot {
-                Slot::Map => sel.map.is_some(),
-                Slot::Font => sel.font.is_some(),
-                Slot::Announcer => sel.announcer.is_some(),
+                Slot::Map => shared.category_mods.map.is_some(),
+                Slot::Font => shared.category_mods.font.is_some(),
+                Slot::Announcer => shared.category_mods.announcer.is_some(),
             }
         };
         if !already {

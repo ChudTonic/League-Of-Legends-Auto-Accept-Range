@@ -27,7 +27,7 @@ pub mod protocol;
 pub mod ws;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tauri::AppHandle;
 use tokio::net::TcpListener;
@@ -49,34 +49,6 @@ const PORT_RANGE_END: u16 = 50010;
 /// momentarily-slow client; a lagged client just misses the oldest entries
 /// (`tokio::sync::broadcast`'s documented behavior), it never blocks a sender.
 const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
-/// One extracted-and-ready non-skin mod selection (map/font/announcer/other)
-/// — ported from the ad hoc dict shape Python stuffed onto `shared_state`
-/// (`selected_map_mod`/`selected_font_mod`/`selected_announcer_mod`/
-/// `selected_other_mods`).
-///
-/// DEVIATION (flagged for the lead): these belong conceptually next to
-/// `SkinsShared::selected_custom_mod` in `state.rs`, but `state.rs` isn't in
-/// this milestone's file scope, so they live here instead. S5's injection
-/// trigger will need read access to them (as `extra_mod_names` for
-/// `InjectionManager::inject_skin_immediately`) — recommend migrating this
-/// into `SkinsShared` in a follow-up so trigger.rs doesn't have to reach into
-/// `bridge::BridgeContext`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModSelection {
-    pub mod_name: String,
-    pub mod_path: String,
-    pub mod_folder_name: String,
-    pub relative_path: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ModSelections {
-    pub map: Option<ModSelection>,
-    pub font: Option<ModSelection>,
-    pub announcer: Option<ModSelection>,
-    pub others: Vec<ModSelection>,
-}
 
 struct BridgeInner {
     tx: Sender<String>,
@@ -125,14 +97,16 @@ pub struct BridgeContext {
     /// admin checks) without widening `bridge::spawn`'s signature — see
     /// `handlers::settings` for the call sites.
     pub app: AppHandle,
+    /// Map/font/announcer/other mod selections (`_handle_select_*`) live in
+    /// `skins.shared.lock_safe().category_mods` (`state::CategoryModSelections`)
+    /// — MIGRATED here from a bridge-local `ModSelections` this milestone
+    /// used to keep so `trigger.rs`'s injection trigger (which reads
+    /// `category_mods` directly) sees what the bridge selects.
     pub skins: Arc<SkinsState>,
     pub injection: Arc<InjectionManager>,
     pub mod_storage: Arc<ModStorageService>,
     pub handle: BridgeHandle,
     pub http_client: reqwest::Client,
-    /// See `ModSelections`'s doc comment for why this lives here instead of
-    /// `SkinsShared`.
-    pub mod_selections: Arc<Mutex<ModSelections>>,
 }
 
 /// Find the first free port in `50000..=50010` (ported from
@@ -221,7 +195,6 @@ pub fn spawn(app: AppHandle, skins: Arc<SkinsState>, injection: Arc<InjectionMan
         mod_storage,
         handle: handle.clone(),
         http_client,
-        mod_selections: Arc::new(Mutex::new(ModSelections::default())),
     };
 
     spawn_phase_rebroadcast(ctx.clone(), phase);

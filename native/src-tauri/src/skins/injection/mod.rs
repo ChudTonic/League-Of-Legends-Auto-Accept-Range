@@ -136,6 +136,14 @@ impl InjectionManager {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).injection_threshold
     }
 
+    /// Apply config `monitor_auto_resume_timeout_secs` to the owned
+    /// `GameMonitor` (ported call site: `lib.rs`'s `setup()`, right after
+    /// construction). Forwards to `GameMonitor::set_auto_resume_timeout`,
+    /// which keeps the 1..=180s clamp.
+    pub fn set_auto_resume_timeout(&self, secs: f64) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).game_monitor.set_auto_resume_timeout(secs);
+    }
+
     /// Track the currently-locked champion (ported from
     /// `InjectionManager.on_champion_locked`).
     pub fn on_champion_locked(&self, champion_name: &str) {

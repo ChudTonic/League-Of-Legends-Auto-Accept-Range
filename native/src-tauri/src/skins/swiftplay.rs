@@ -297,15 +297,16 @@ pub async fn on_game_start(app: AppHandle, skins: Arc<SkinsState>) {
 
 /// See this module's doc comment for the TOCTOU fix this implements.
 ///
-/// FLAGGED FOR THE LEAD (same gap `trigger.rs`'s doc comment describes in
-/// detail): this needs a low-level "run an overlay for an arbitrary
-/// pre-extracted mod-folder list, no forced primary skin" entry point that
-/// `InjectionManager` doesn't expose. As a stand-in, one tracked
-/// (champion, skin) pair is re-resolved as `inject_skin_immediately`'s
-/// primary `skin_name` (redundant work, but correct) and every other
-/// already-extracted folder rides along as `extra_mod_names` — subject to
-/// the same `clean_mods_dir`-wipes-extras caveat, so a multi-champion
-/// Swiftplay lobby may only get ONE skin injected until that's fixed.
+/// DEVIATION (still true, but the data-loss part is fixed — see
+/// `injector.rs::inject_skin`'s "CLEAN ORDERING CONTRACT"): `InjectionManager`
+/// has no low-level "run an overlay for an arbitrary pre-extracted mod-folder
+/// list, no forced primary skin" entry point, so one tracked (champion, skin)
+/// pair is re-resolved as `inject_skin_immediately`'s primary `skin_name`
+/// (redundant work, but correct) and every other already-extracted folder
+/// rides along as `extra_mod_names`. `extract_tracked_skins` already cleans
+/// `mods_dir` before staging any of them, and `inject_skin` no longer
+/// re-cleans once it sees `extra_mod_names` is non-empty, so a multi-champion
+/// Swiftplay lobby's other extracted skins now survive into this overlay.
 async fn run_overlay_if_ready(app: AppHandle, skins: Arc<SkinsState>) {
     let Ok(_guard) = overlay_lock().try_lock() else {
         log_info!("[swiftplay] Overlay already running - skipping duplicate call");
@@ -331,6 +332,16 @@ async fn run_overlay_if_ready(app: AppHandle, skins: Arc<SkinsState>) {
         log_error!("[swiftplay] Injection manager not available");
         return;
     };
+
+    // Resolve the League "Game" directory lazily and set it every overlay
+    // build (cheap, and the install dir can change between client launches)
+    // — `mkoverlay`'s `--game:<path>` is unset without it, making injection a
+    // silent no-op.
+    let Some(game_dir) = lcu_ext::resolve_game_dir() else {
+        log_warn!("[swiftplay] Could not resolve League game directory (client not running?) - skipping overlay injection");
+        return;
+    };
+    injection.set_game_dir(game_dir);
 
     log_info!("[swiftplay] Running overlay injection for {} mod(s): {}", extracted_folders.len(), extracted_folders.join(", "));
 
