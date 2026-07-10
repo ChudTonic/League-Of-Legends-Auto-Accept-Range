@@ -5,9 +5,15 @@
 /*
 !/native/
 !/docs/
+!/relay-worker/
 !/README.md
 !/.gitignore
 !/.gitattributes
+
+# Relay worker build output (wasm + wrangler artifacts)
+relay-worker/target/
+relay-worker/build/
+relay-worker/.wrangler/
 
 # ── Inside native/: build output + local-only files ──
 native/target/
@@ -24,6 +30,12 @@ native/.cargo/
 native/make_ico.py
 native/README.md
 native/ui/README.md
+
+# cslol-dll.dll is a DMCA-sensitive redistribution of Riot's WAD hook and is
+# NEVER committed — the user supplies their own copy. hashes.game.txt (207 MB)
+# is downloaded at runtime from CommunityDragon, never committed.
+native/src-tauri/resources/cslol-tools/cslol-dll.dll
+**/hashes.game.txt
 
 # ── Editor / OS noise (applies everywhere) ──
 __pycache__/
