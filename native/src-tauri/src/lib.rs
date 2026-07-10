@@ -60,6 +60,12 @@ pub struct AppState {
     /// ticker S5) will read `events` to subscribe. `None` only in the brief
     /// window before `setup()` spawns it.
     pub skins_phase: Mutex<Option<skins::phase::PhaseHandle>>,
+    /// The skins bridge server's handle (S4), set once during `setup()`.
+    /// Later milestones (S5 ticker/trigger, S6 party) hold a clone and call
+    /// its `broadcast_*` methods to push state to the Pengu Loader plugins —
+    /// see `skins::bridge::broadcast`. `None` only in the brief window
+    /// before `setup()` spawns it.
+    pub skins_bridge: Mutex<Option<skins::bridge::BridgeHandle>>,
 }
 
 /// Mutex helper that ignores poisoning. A panic while holding a lock must not
@@ -490,6 +496,7 @@ pub fn run() {
         config_gen: AtomicU64::new(0),
         skins: Arc::new(skins::SkinsState::new()),
         skins_phase: Mutex::new(None),
+        skins_bridge: Mutex::new(None),
     });
 
     tauri::Builder::default()
@@ -539,6 +546,27 @@ pub fn run() {
             // when the skins subsystem has no client to watch. Cheaper than
             // gating on a not-yet-existent settings flag and respawning later.
             let phase_handle = skins::phase::spawn(handle.clone(), st.skins.clone());
+
+            // Skins bridge server (S4): the local axum server the in-client
+            // Pengu Loader plugins connect to. `InjectionManager` is
+            // constructed here (nothing else in the app owns one yet) with
+            // the standard bundled-tools/injection-tree paths; `set_game_dir`
+            // is left unset this milestone (S5's game-flow wiring resolves
+            // the League install directory and calls it). `bridge::spawn`
+            // only needs to `subscribe()` the phase actor's events (a
+            // `&self` method), so it borrows `phase_handle` rather than
+            // consuming it — `PhaseHandle` isn't `Clone`, and `skins_phase`
+            // below still needs to own it for `lcu_ws.rs`'s fan-out.
+            let injection_manager = std::sync::Arc::new(skins::injection::InjectionManager::new(
+                skins::injection::tools::cslol_tools_dir(),
+                skins::paths::injection_mods_dir(),
+                skins::paths::skins_dir(),
+                skins::paths::injection_overlay_dir(),
+            ));
+            let bridge_handle =
+                skins::bridge::spawn(handle.clone(), st.skins.clone(), injection_manager, &phase_handle);
+            *st.skins_bridge.lock_safe() = Some(bridge_handle);
+
             *st.skins_phase.lock_safe() = Some(phase_handle);
 
             // No in-game hotkeys by design: the tools are armed/disarmed from
