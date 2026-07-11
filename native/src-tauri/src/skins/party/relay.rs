@@ -103,6 +103,13 @@ struct RelayShared {
     /// intentional leave (as opposed to a transient drop, which retries).
     should_run: AtomicBool,
     members: StdMutex<Vec<RelayMember>>,
+    /// Last `join` and `skin` we sent, so a RECONNECTED socket can re-announce
+    /// them. `join`/`skin` are one-shot `OutCmd`s consumed on the first socket;
+    /// without replay, a client that drops + reconnects becomes a ghost in the
+    /// room (the server never re-learns who it is, and its skin updates stop
+    /// reaching peers) until the user manually re-enables party mode.
+    last_join: StdMutex<Option<(u64, String)>>,
+    last_skin: StdMutex<Option<Value>>,
 }
 
 /// WebSocket connection to a shared party room (ported from `PartyRelay`).
@@ -144,6 +151,8 @@ impl PartyRelay {
             connected: AtomicBool::new(true),
             should_run: AtomicBool::new(true),
             members: StdMutex::new(Vec::new()),
+            last_join: StdMutex::new(None),
+            last_skin: StdMutex::new(None),
         });
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
@@ -258,6 +267,27 @@ async fn run_one_connection(
     let mut ping_timer = tokio::time::interval(PING_INTERVAL);
     ping_timer.tick().await; // first tick fires immediately — consume it so the real cadence is 25s.
 
+    // Re-announce ourselves on (re)connect. On the FIRST connection both are
+    // None (the manager sends `join` right after connecting), so this is a
+    // no-op; on a RECONNECT they carry the last join + skin, without which the
+    // fresh socket would be a ghost the server never re-registers.
+    {
+        let join = shared.last_join.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some((summoner_id, summoner_name)) = join {
+            let payload = json!({"type":"join","summoner_id":summoner_id,"summoner_name":summoner_name});
+            if write.send(Message::Text(payload.to_string())).await.is_err() {
+                return false;
+            }
+        }
+        let skin = shared.last_skin.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(skin) = skin {
+            let payload = json!({"type":"skin","skin":skin});
+            if write.send(Message::Text(payload.to_string())).await.is_err() {
+                return false;
+            }
+        }
+    }
+
     loop {
         tokio::select! {
             _ = ping_timer.tick() => {
@@ -268,18 +298,26 @@ async fn run_one_connection(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(OutCmd::Join { summoner_id, summoner_name }) => {
+                        // Remember for reconnect replay before sending.
+                        *shared.last_join.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((summoner_id, summoner_name.clone()));
                         let payload = json!({"type":"join","summoner_id":summoner_id,"summoner_name":summoner_name});
                         if write.send(Message::Text(payload.to_string())).await.is_err() {
                             return false;
                         }
                     }
                     Some(OutCmd::Skin(skin)) => {
+                        *shared.last_skin.lock().unwrap_or_else(|e| e.into_inner()) = skin.clone();
                         let payload = json!({"type":"skin","skin":skin});
                         if write.send(Message::Text(payload.to_string())).await.is_err() {
                             return false;
                         }
                     }
                     Some(OutCmd::Leave) => {
+                        // Intentional leave — forget our identity so a later
+                        // re-enable doesn't replay a stale join/skin.
+                        *shared.last_join.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        *shared.last_skin.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         let _ = write.send(Message::Text(json!({"type":"leave"}).to_string())).await;
                         let _ = write.close().await;
                         return true;

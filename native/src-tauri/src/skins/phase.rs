@@ -427,6 +427,19 @@ async fn champ_select_entry(
     last_locked_champion_id: &mut Option<i64>,
     scraper_cache: &mut ChampionSkinCache,
 ) {
+    // Heal a leaked injection lock/overlay from a previous game on EVERY champ
+    // select entry — Swiftplay included (this runs BEFORE the Swiftplay branch
+    // returns). A `runoverlay` that never self-exited otherwise holds the
+    // injection mutex + `injection_in_progress` flag forever, blacking out
+    // skins for the rest of the session, and leaks the `mod-tools.exe` that
+    // locks the installer. OS-level (can't deadlock on the mutex it's clearing)
+    // and on a blocking thread (its process enumeration must not stall the
+    // single-writer phase actor). Champ-select entry is de-duped upstream, so
+    // this fires once per game.
+    if let Some(injection) = app.state::<Arc<AppState>>().skins_injection.lock_safe().clone() {
+        tauri::async_runtime::spawn_blocking(move || injection.reset_stuck_injection());
+    }
+
     let mode = match lcu::cached_auth() {
         Some(auth) => Some(lcu_ext::detect_game_mode(client, &auth).await),
         None => None,
@@ -458,16 +471,6 @@ async fn champ_select_entry(
     }
 
     log_info!("[phase] Entering ChampSelect - resetting state for new game");
-
-    // Heal a stuck injection lock leaked by a previous game's overlay (a
-    // `runoverlay` that never self-exited holds the injection mutex +
-    // `injection_in_progress` flag forever, blacking out skins for every
-    // subsequent game this session). Runs OS-level so it can't deadlock on the
-    // very lock it's clearing. Also reaps the leaked `mod-tools.exe` that would
-    // otherwise lock the installer.
-    if let Some(injection) = app.state::<Arc<AppState>>().skins_injection.lock_safe().clone() {
-        injection.reset_stuck_injection();
-    }
 
     if let Some(auth) = lcu::cached_auth() {
         if let Some(ids) = lcu_ext::owned_skin_ids(client, &auth).await {

@@ -90,34 +90,27 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     }
 
     // No own skin selected (this player kept their default / didn't pick one).
-    // We still owe the overlay any connected party peers' skins — inject those
-    // alone. Previously an empty name aborted the whole trigger, so NOT picking
-    // a skin silently dropped every teammate's skin too (the ARAM "she didn't
-    // pick, so she saw nobody's skin" bug). The ranked kill-switch above still
-    // applies.
+    // We still owe the overlay any connected party peers' skins AND any selected
+    // category mods (map/font/announcer). An empty name used to abort the whole
+    // trigger, silently dropping teammates' skins (the ARAM "she didn't pick, so
+    // she saw nobody's skin" bug) and category mods. Route through
+    // `run_custom_mod_injection` with `base_skin_name: None`: it stages party +
+    // category mods and injects them mods-only (no primary skin), and logs a
+    // clean skip if there's nothing to inject. The ranked kill-switch above
+    // still applies.
     if name.is_empty() {
-        let party_folders = stage_party_mods(&party_mgr).await;
-        if party_folders.is_empty() {
-            log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
-            log_error!("INJECTION SKIPPED - no own skin and no party skins to inject");
-            log_error!("   Loadout Timer: #{ticker_id}");
-            log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
-            injection.resume_if_suspended();
-            return;
-        }
-        let count = party_folders.len();
-        log_info!("[INJECT] No own skin selected - injecting {count} party-member skin(s) only");
-        spawn_game_end_watcher(skins.clone(), injection.clone());
-        let injection = injection.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            if injection.inject_mods_only_immediately(&party_folders) {
-                log_info!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
-                log_info!("PARTY-ONLY INJECTION COMPLETED ({count} skin(s))");
-                log_info!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
-            } else {
-                log_error!("[INJECT] Party-only injection failed");
-            }
+        let (selected_custom_mod, category_mods, champ_id) = {
+            let shared = skins.shared.lock_safe();
+            (shared.selected_custom_mod.clone(), shared.category_mods.clone(), shared.locked_champ_id.or(shared.hovered_champ_id))
+        };
+        let custom = selected_custom_mod.unwrap_or_else(|| CustomModSelection {
+            skin_id: 0,
+            champion_id: champ_id.unwrap_or(0),
+            mod_name: String::new(),
+            mod_path: String::new(),
+            relative_path: String::new(),
         });
+        run_custom_mod_injection(&app, &skins, &injection, bridge.as_ref(), custom, &category_mods, None, champion_name.clone(), &party_mgr).await;
         return;
     }
 
@@ -518,18 +511,20 @@ async fn run_custom_mod_injection(
 
     log_info!("[INJECT] Injecting mods: {}", labels.join(", "));
 
-    // The base skin (if any) becomes the primary; otherwise fall back to the
-    // custom mod's own skin token so `inject_skin_immediately` has SOMETHING
-    // to resolve (see this module's doc comment: the "mods only, no primary"
-    // low-level entry point was never ported).
-    let primary = base_skin_name.unwrap_or_else(|| format!("skin_{}", custom_mod.skin_id.max(0)));
-
     spawn_game_end_watcher(skins.clone(), injection.clone());
 
     let injection = injection.clone();
     let ticker_champion_name = champion_name;
     tauri::async_runtime::spawn_blocking(move || {
-        let ok = injection.inject_skin_immediately(&primary, None, Some(&ticker_champion_name), champion_id, &extra_names);
+        // With a base skin -> normal inject (it resolves + extracts the primary
+        // and folds in `extra_names`). WITHOUT one (party and/or category mods
+        // only) -> the mods-only overlay path: routing pure extras through
+        // `inject_skin_immediately` with a `skin_0` placeholder would trip its
+        // base-skin short-circuit and silently drop every extra mod.
+        let ok = match &base_skin_name {
+            Some(primary) => injection.inject_skin_immediately(primary, None, Some(&ticker_champion_name), champion_id, &extra_names),
+            None => injection.inject_mods_only_immediately(&extra_names),
+        };
         if ok {
             log_info!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
             log_info!("CUSTOM MOD INJECTION COMPLETED");
@@ -776,7 +771,13 @@ fn spawn_game_end_watcher(skins: Arc<SkinsState>, injection: Arc<InjectionManage
                 Some("InProgress") => has_been_in_progress = true,
                 Some("Reconnect") | Some("GameStart") => {}
                 _ if has_been_in_progress => {
-                    injection.kill_all_runoverlay_processes();
+                    // OS-level reset, NOT `kill_all_runoverlay_processes` — the
+                    // latter locks the injection mutex that this game's babysit
+                    // loop still holds, so it would self-deadlock exactly when a
+                    // runoverlay failed to self-exit (the case we're cleaning
+                    // up). `reset_stuck_injection` kills by OS enumeration with
+                    // no lock, letting the babysit loop's `try_wait` return.
+                    injection.reset_stuck_injection();
                     break;
                 }
                 _ => {}

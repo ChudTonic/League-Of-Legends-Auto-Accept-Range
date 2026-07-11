@@ -767,14 +767,12 @@ async fn updater_install(app: AppHandle) -> Result<(), String> {
     use crate::skins::slog::{log_info, log_warn};
 
     log_info!("[update] user requested install - preparing");
-    // Belt-and-suspenders: kill lingering mod-tools/runoverlay. (As of the
-    // cslol-tools relocation these run from user-data, not the install folder,
-    // so the installer no longer needs them unlocked — but clearing them is
-    // still cheap insurance.)
-    let injection = app.state::<Arc<AppState>>().skins_injection.lock_safe().clone();
-    if let Some(inj) = injection {
-        inj.kill_all_modtools_processes();
-    }
+    // NOTE: intentionally NOT killing mod-tools here. Since cslol-tools now run
+    // from user-data (not the install folder), the installer never touches them,
+    // so there's nothing to unlock — and `kill_all_modtools_processes` takes a
+    // blocking lock on the injection mutex that a live in-game overlay holds for
+    // the whole match, which would hang the update. The install is lock-safe on
+    // its own now.
 
     let updater = app.updater().map_err(|e| {
         log_warn!("[update] updater unavailable: {e}");
