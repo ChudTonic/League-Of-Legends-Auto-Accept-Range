@@ -634,6 +634,16 @@ fn skins_download(force: bool, app: AppHandle) {
 /// never stalls the webview.
 #[tauri::command]
 fn skins_activate_pengu(state: tauri::State<Arc<AppState>>) -> Result<serde_json::Value, String> {
+    // Pengu Loader modifies the League install (e.g. under C:\Riot Games), which
+    // Windows only permits with admin rights — a non-elevated launch of its CLI
+    // fails with "requires elevation" (os error 740), which the UI used to
+    // surface as a misleading "check that it's bundled / League path" error.
+    // Skin injection needs admin too, so gate here with a clear, actionable
+    // message. An elevated Chud spawns the (elevated) Pengu Loader fine.
+    if !winutil::is_admin() {
+        return Err("Chud needs to run as administrator to set up skins. Pengu Loader modifies your League install, which Windows only allows with admin rights (skin injection needs admin too). Close Chud, right-click it, choose \"Run as administrator,\" then click Activate again.".to_string());
+    }
+
     let configured = state.config.lock_safe().skins.league_path.clone();
     let league_path = if !configured.trim().is_empty() {
         Some(configured)
@@ -643,7 +653,7 @@ fn skins_activate_pengu(state: tauri::State<Arc<AppState>>) -> Result<serde_json
     if skins::pengu::activate_on_start(league_path.as_deref()) {
         Ok(json!({ "ok": true, "leaguePath": league_path }))
     } else {
-        Err("Failed to activate Pengu Loader — check that it's bundled and the League path is correct.".to_string())
+        Err("Couldn't activate Pengu Loader. Make sure League of Legends is installed and, if needed, set its path in Settings, then try again.".to_string())
     }
 }
 
