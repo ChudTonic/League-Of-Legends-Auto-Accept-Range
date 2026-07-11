@@ -536,6 +536,10 @@
     dialog.appendChild(panel);
     document.body.appendChild(dialog);
 
+    // Auto-dismiss after 3s so the popup can never get stuck, regardless of
+    // whether the OK/backdrop clicks land in the client's Ember-managed DOM.
+    setTimeout(dismissWelcome, 3000);
+
     log.info("welcome popup shown");
   }
 
