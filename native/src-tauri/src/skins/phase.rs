@@ -200,9 +200,36 @@ async fn run(
                 // happened between actor start and the first WS session
                 // delta reaching us. A no-op once `own_champion_locked`.
                 bootstrap_late_locked_champion(&skins, &client, &events, &mut last_locked_champion_id, &mut scraper_cache).await;
+                // Arm the loadout ticker DURING the champ-select FINALIZATION
+                // countdown (ported from Rose's primary injection path). This
+                // preps injection — and arms the game monitor — before League
+                // even launches, which is far more reliable than the GameStart
+                // fallback that races the game's asset load. `maybe_start_timer`
+                // self-gates on the session's `timer.phase == FINALIZATION` and
+                // won't double-arm, so calling it every poll is safe.
+                maybe_arm_loadout_ticker(&app, &skins, &client).await;
             }
         }
     }
+}
+
+/// Fetch the raw champ-select session and let the loadout ticker decide whether
+/// to arm (it only fires on the FINALIZATION timer subphase). No-op outside
+/// champ select. See the call site for why this is the reliable injection path.
+async fn maybe_arm_loadout_ticker(app: &AppHandle, skins: &Arc<SkinsState>, client: &reqwest::Client) {
+    let phase = { skins.shared.lock_safe().phase.clone() };
+    match phase.as_deref() {
+        Some("ChampSelect") | Some("FINALIZATION") => {}
+        _ => return,
+    }
+    let Some(auth) = lcu::cached_auth() else { return };
+    let Some(raw) = lcu_ext::shared_cache()
+        .get(client, &auth, "/lol-champ-select/v1/session", lcu_ext::DEFAULT_CACHE_TTL)
+        .await
+    else {
+        return;
+    };
+    crate::skins::ticker::TimerManager::maybe_start_timer(app.clone(), Arc::clone(skins), &raw).await;
 }
 
 async fn poll_phase(client: &reqwest::Client) -> Option<String> {
