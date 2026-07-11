@@ -178,10 +178,18 @@ Win32_System_Registry, Win32_Security. Relay worker: separate crate `relay-worke
 `worker` (workers-rs).
 
 ## 5. Milestones
-Status: S1 ✅ S2 ✅ (LCU+phase) S3 ✅ (injection+pengu) S3.1 ✅ (NtSuspend FFI, Fable)
-S8 ✅ (bundling+plugin rebrand) + relay worker ✅ deployed
-(`https://chud-party-relay.jivy26.workers.dev`). Remaining: S4 bridge, S5 game-flow,
-S6 party client, S7 downloads, S9 UI, S10 gate.
+Status: ALL MILESTONES COMPLETE. S1–S9 ✅ + reconciliation pass ✅ + S10 gate ✅.
+Relay worker deployed + protocol-tested (`https://chud-party-relay.jivy26.workers.dev`;
+old `rose-party-relay` deleted). 112 unit tests pass; `cargo build --release` clean;
+whole-repo `rose` sweep clean (only docs/CREDITS attribution remain, by design).
+
+Deferred-verification debt (CANNOT be automated without a live League client +
+user-supplied cslol-dll.dll): the real end-to-end injection in a live champ-select is
+unproven in code — bridge protocol is verified against the live relay, phase/ticker/
+trigger are unit-tested, but an actual overlay build + game-suspend against a running
+League client has not been exercised. Needs a live-client run (or an LCU replay harness)
+before shipping. Remaining functional gaps: custom-mod historic (path: enum), late-lock
+bootstrap (both documented under Open reconciliation items).
 
 Open reconciliation items (from S2/S3 agent notes, address before S10):
 - phase.rs: late-lock bootstrap on mid-ChampSelect start NOT ported; Swiftplay skips
