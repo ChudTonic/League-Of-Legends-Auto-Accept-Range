@@ -67,36 +67,67 @@ pub fn resources_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("resources"))
 }
 
-/// Bundled cslol tools directory: `(exe)/resources/cslol-tools/`.
+/// RUNTIME cslol-tools directory — `%LOCALAPPDATA%\Chud\cslol-tools`
+/// (user-data), NOT the install folder. We run `mod-tools.exe` from here so an
+/// installer update never has to overwrite a locked, in-use tool — running it
+/// straight out of the install dir was the recurring "Error opening file for
+/// writing: mod-tools.exe" cause, because the running overlay held that exact
+/// file open while the updater tried to replace it. It's also precisely where
+/// the user-supplied `cslol-dll.dll` already lives, so mod-tools finds the DLL
+/// right beside itself.
 pub fn cslol_tools_dir() -> PathBuf {
+    crate::skins::paths::data_root().join("cslol-tools")
+}
+
+/// The read-only copy shipped inside the installer (`(exe)/resources/cslol-tools/`)
+/// — the SOURCE that `ensure_cslol_tools` seeds the runtime dir from on first
+/// launch. Never executed directly, so the updater can always overwrite it.
+pub fn bundled_cslol_tools_dir() -> PathBuf {
     resources_root().join("cslol-tools")
 }
 
-/// Keep `cslol-dll.dll` present next to the bundled `mod-tools.exe` across app
-/// updates. The DLL is DMCA-sensitive (never bundled or distributed), so it
-/// lives persistently in the user-data dir (`%LOCALAPPDATA%\Chud\cslol-tools`)
-/// and is restored next to `mod-tools.exe` on each startup — an installer
-/// update replaces the install (and its cslol-tools) but never touches
-/// user-data. Also migrates a DLL that only exists in the install (e.g. from an
-/// older zip build) into user-data so it survives the next update. Call once at
-/// startup; all failures are silent (injection's own hash gate reports a
-/// missing/invalid DLL).
-pub fn ensure_cslol_dll() {
-    let install = cslol_tools_dir().join("cslol-dll.dll");
-    let persistent_dir = crate::skins::paths::data_root().join("cslol-tools");
-    let persistent = persistent_dir.join("cslol-dll.dll");
-    let _ = std::fs::create_dir_all(&persistent_dir);
-
-    // Migrate an install-only DLL (old zip build) into persistent user-data.
-    if !persistent.exists() && install.exists() {
-        let _ = std::fs::copy(&install, &persistent);
-    }
-    // Restore the DLL next to mod-tools.exe (an update wipes the install copy).
-    if persistent.exists() && !install.exists() {
-        if let Some(parent) = install.parent() {
-            let _ = std::fs::create_dir_all(parent);
+/// Seed the user-data runtime cslol-tools dir from the bundled installer copy.
+/// The tools are byte-identical across Chud versions, so only a MISSING file is
+/// copied — never overwrite (an existing `mod-tools.exe` may be held open by a
+/// live runoverlay, and the user-supplied `cslol-dll.dll` must never be
+/// clobbered). Because the app runs everything from user-data afterward, the
+/// installer's copy is never executed, never locked, and an update that
+/// overwrites it can't fail. Call once at startup; failures are silent (the
+/// injection hash gate reports a genuinely missing/invalid tool). Supersedes
+/// the old dll-only shuffle — the DLL's persistent location was already this
+/// same user-data dir, so nothing moves for existing installs.
+pub fn ensure_cslol_tools() {
+    let bundled = bundled_cslol_tools_dir();
+    let runtime = cslol_tools_dir();
+    let _ = std::fs::create_dir_all(&runtime);
+    // Small, byte-identical tools + the user-supplied DLL: straight copy if
+    // missing. Never overwrite (a present file may be a locked runoverlay's
+    // mod-tools.exe, or the user's own dll).
+    for tool in ["mod-tools.exe", "wad-extract.exe", "wad-make.exe", "cslol-dll.dll"] {
+        let dst = runtime.join(tool);
+        if !dst.exists() {
+            let src = bundled.join(tool);
+            if src.exists() {
+                let _ = std::fs::copy(&src, &dst);
+            }
         }
-        let _ = std::fs::copy(&persistent, &install);
+    }
+    // The ~207MB game-hash file mod-tools reads from its own dir is downloaded
+    // at runtime (never in the installer). Migrate an existing copy from the
+    // old install-folder location so relocating the runtime dir doesn't force a
+    // fresh 207MB re-download. Atomic (temp + rename) so an interrupted copy
+    // never leaves a corrupt hashes file that would break mkoverlay; if it's
+    // absent (fresh install), the downloader fetches it into the runtime dir.
+    let hashes_dst = runtime.join("hashes.game.txt");
+    let hashes_src = bundled.join("hashes.game.txt");
+    if !hashes_dst.exists() && hashes_src.exists() {
+        let tmp = runtime.join("hashes.game.txt.migrating");
+        let _ = std::fs::remove_file(&tmp);
+        if std::fs::copy(&hashes_src, &tmp).is_ok() {
+            let _ = std::fs::rename(&tmp, &hashes_dst);
+        } else {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 }
 

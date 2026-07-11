@@ -764,16 +764,34 @@ async fn updater_check(app: AppHandle) -> Option<UpdateInfo> {
 async fn updater_install(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
 
-    // Release cslol-tools file locks so the installer can overwrite them.
+    use crate::skins::slog::{log_info, log_warn};
+
+    log_info!("[update] user requested install - preparing");
+    // Belt-and-suspenders: kill lingering mod-tools/runoverlay. (As of the
+    // cslol-tools relocation these run from user-data, not the install folder,
+    // so the installer no longer needs them unlocked — but clearing them is
+    // still cheap insurance.)
     let injection = app.state::<Arc<AppState>>().skins_injection.lock_safe().clone();
     if let Some(inj) = injection {
-        eprintln!("[update] killing lingering mod-tools processes before install");
         inj.kill_all_modtools_processes();
     }
 
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update =
-        updater.check().await.map_err(|e| e.to_string())?.ok_or_else(|| "no update available".to_string())?;
+    let updater = app.updater().map_err(|e| {
+        log_warn!("[update] updater unavailable: {e}");
+        e.to_string()
+    })?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| {
+            log_warn!("[update] check failed: {e}");
+            e.to_string()
+        })?
+        .ok_or_else(|| {
+            log_warn!("[update] install requested but no update available");
+            "no update available".to_string()
+        })?;
+    log_info!("[update] installing {} silently", update.version);
 
     let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let app_progress = app.clone();
@@ -787,9 +805,12 @@ async fn updater_install(app: AppHandle) -> Result<(), String> {
             || {},
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log_warn!("[update] download/install failed: {e}");
+            e.to_string()
+        })?;
 
-    eprintln!("[update] installed - relaunching");
+    log_info!("[update] installed - relaunching");
     app.restart();
 }
 

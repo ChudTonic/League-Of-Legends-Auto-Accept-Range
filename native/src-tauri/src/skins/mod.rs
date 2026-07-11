@@ -62,8 +62,8 @@ pub fn init() -> std::io::Result<()> {
     paths::ensure_tree()?;
     slog::init(&paths::logs_dir());
     slog::cleanup_old_logs(&paths::logs_dir());
-    // Restore the user-supplied cslol DLL next to mod-tools.exe (survives
-    // installer updates, which never touch user-data). See its doc comment.
-    injection::tools::ensure_cslol_dll();
+    // Seed the cslol tools into user-data and run them from there, so an
+    // installer update never has to overwrite a locked in-use mod-tools.exe.
+    injection::tools::ensure_cslol_tools();
     Ok(())
 }
