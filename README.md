@@ -12,6 +12,8 @@
 
 <p align="center">
   <a href="https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range/releases/latest"><b>⬇️ Download the latest installer</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://discord.gg/SxS5yjdnwR"><b>💬 Join the Discord</b></a>
 </p>
 
 ---
@@ -20,7 +22,9 @@
 
 1. **[Download the installer](https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range/releases/latest)** (`Chud_x.y.z_x64-setup.exe`) and run it. It installs for your user only — no admin install needed.
 2. Launch **Chud**, and start League. Chud finds your client automatically.
-3. That's it. From now on Chud **updates itself** — every new version installs quietly on the next launch. No reinstalling, no re-downloading.
+3. That's it — Chud **keeps itself up to date**. When a new version is out, a **✨ update pill** appears in the top bar; click it and Chud downloads, installs, and restarts on its own. No reinstalling, no re-downloading, no manual file swaps.
+
+> 💬 **Questions or want to play with skin sync?** [Join the Chud Discord](https://discord.gg/SxS5yjdnwR).
 
 > 💡 **Skins need one extra one-time file.** For legal reasons we can't ship the skin-injection library. Drop your own copy of `cslol-dll.dll` into `%LOCALAPPDATA%\Chud\cslol-tools\` once, and skins work forever after — it survives every update.
 
@@ -65,7 +69,7 @@ Chud is a **ground-up rewrite of Rose in Rust**, with major improvements along t
 
 - 🦀 Rewritten from Python into **Rust + Tauri** — one small self-contained `.exe`, faster and lighter.
 - 🤝 **Seamless party mode** — auto-detects other Chud users in your lobby and exchanges skins automatically (Rose needed manual token sharing).
-- 🔄 **Automatic updates** via a signed installer — no more manually sending files around.
+- 🔄 **In-app updates** — a signed auto-updater with a one-click "update available" pill, so nobody swaps files by hand.
 - 🔒 Safety hardening, an offline skin database, and a headless test suite.
 
 **Huge thanks to Alban1911 and the Rose project — none of the skin features would exist without them.** If you like the skin side of Chud, go give [Rose](https://github.com/Alban1911/Rose) a star.
@@ -118,6 +122,10 @@ native/
 relay-worker/  ← Cloudflare Worker (Durable Object) that relays party skin-sync
 docs/          ← screenshots + design notes
 ```
+
+## 💬 Community
+
+Come hang out, get help, or find people to sync skins with: **[discord.gg/SxS5yjdnwR](https://discord.gg/SxS5yjdnwR)**
 
 ---
 
