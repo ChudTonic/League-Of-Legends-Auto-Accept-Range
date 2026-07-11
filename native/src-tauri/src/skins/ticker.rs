@@ -304,6 +304,29 @@ async fn fire_injection(app: &AppHandle, skins: &Arc<SkinsState>, client: &reqwe
     }
 }
 
+/// Universal game-launch injection entry for modes whose champ-select has no
+/// FINALIZATION loadout countdown (Practice Tool, and as a safety net for any
+/// mode), so the loadout ticker never armed. Called on the GameStart phase and
+/// — last resort — on InProgress. Guarded by `last_hover_written` so a game
+/// whose ticker already fired never injects twice. The injection manager arms
+/// the game monitor itself, which suspends League as it launches so the overlay
+/// builds before champion assets load.
+pub(crate) async fn inject_for_game(app: &AppHandle, skins: &Arc<SkinsState>, client: &reqwest::Client) {
+    let (already, has_champ) = {
+        let s = skins.shared.lock_safe();
+        (s.last_hover_written, s.locked_champ_id.or(s.hovered_champ_id).is_some())
+    };
+    if already {
+        return; // the loadout ticker (or an earlier phase) already triggered this game
+    }
+    if !has_champ {
+        return; // nothing locked/hovered to inject for
+    }
+    let id = skins.ticker_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    log_info!("[INJECT] Game-launch injection trigger #{id} (no loadout countdown)");
+    fire_injection(app, skins, client, id).await;
+}
+
 // ---------------------------------------------------------------------
 // Skin name resolution — ported from `SkinNameResolver`.
 // ---------------------------------------------------------------------

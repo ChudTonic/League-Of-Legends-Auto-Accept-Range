@@ -309,17 +309,35 @@ async fn process_phase_observation(
             }
         }
         Phase::InProgress => {
-            // Logging only in the Python original (`_handle_in_progress_entry`);
-            // UI/overlay teardown is S3/S4 territory (bridge + injection).
             log_info!("[phase] InProgress");
+            // Last resort: if both the loadout ticker (FINALIZATION) and
+            // GameStart were missed (a mode that jumps straight here), still
+            // attempt injection. The `last_hover_written` guard inside makes
+            // this a no-op when we already fired for this game.
+            let is_swiftplay = { skins.shared.lock_safe().is_swiftplay_mode };
+            if !is_swiftplay {
+                crate::skins::ticker::inject_for_game(app, skins, client).await;
+            }
         }
         Phase::Matchmaking => {
             phase_exit_reset(skins);
             crate::skins::swiftplay::on_matchmaking_started(app.clone(), Arc::clone(skins)).await;
         }
         Phase::GameStart => {
-            phase_exit_reset(skins);
-            crate::skins::swiftplay::on_game_start(app.clone(), Arc::clone(skins)).await;
+            let is_swiftplay = { skins.shared.lock_safe().is_swiftplay_mode };
+            if is_swiftplay {
+                phase_exit_reset(skins);
+                crate::skins::swiftplay::on_game_start(app.clone(), Arc::clone(skins)).await;
+            } else {
+                // Normal / Practice Tool / any non-swiftplay mode: the loadout
+                // ticker only arms on the champ-select FINALIZATION timer, which
+                // Practice Tool (and some other modes) never reach. Inject as the
+                // game launches — the game monitor suspends League on spawn so
+                // the overlay builds before champion assets load. Inject BEFORE
+                // the exit reset so the locked selection is still readable.
+                crate::skins::ticker::inject_for_game(app, skins, client).await;
+                phase_exit_reset(skins);
+            }
         }
         Phase::Lobby => {
             phase_exit_reset(skins);
