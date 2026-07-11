@@ -183,13 +183,23 @@ Relay worker deployed + protocol-tested (`https://chud-party-relay.jivy26.worker
 old `rose-party-relay` deleted). 112 unit tests pass; `cargo build --release` clean;
 whole-repo `rose` sweep clean (only docs/CREDITS attribution remain, by design).
 
-Deferred-verification debt (CANNOT be automated without a live League client +
-user-supplied cslol-dll.dll): the real end-to-end injection in a live champ-select is
-unproven in code — bridge protocol is verified against the live relay, phase/ticker/
-trigger are unit-tested, but an actual overlay build + game-suspend against a running
-League client has not been exercised. Needs a live-client run (or an LCU replay harness)
-before shipping. Remaining functional gaps: custom-mod historic (path: enum), late-lock
-bootstrap (both documented under Open reconciliation items).
+END-TO-END PROVEN (2026-07-10, live Practice Tool run): full injection pipeline verified
+against a real League client — trigger fired, resolved skin_266033 (Primordian Aatrox),
+NtSuspendProcess suspended the live game (pid 26548), mkoverlay built the overlay in 1.14s,
+runoverlay started, NtResumeProcess resumed cleanly. Skin visible in-game. The game-suspend
+FFI (the highest-risk piece) works on a real process. Deferred-verification debt CLEARED.
+
+Bug found + fixed during that run: injection was gated on a gameflow phase "FINALIZATION"
+that never fires (FINALIZATION is a champ-select session-timer subphase, not a gameflow
+phase), so the loadout ticker never armed. Fixed by triggering injection at the GameStart
+phase (with an InProgress fallback + last_hover_written dedup guard) — the game monitor
+suspends League on launch so the overlay builds before assets load. Works in Practice Tool
+(no loadout countdown) and normal games alike. See `ticker::inject_for_game` + phase.rs.
+
+Remaining functional gaps (non-blocking): custom-mod historic (path: enum), late-lock
+bootstrap (both documented under Open reconciliation items). Optional future polish: also
+arm the loadout ticker on the champ-select session-timer FINALIZATION for earlier injection
+in normal games (currently GameStart-time injection covers all modes via the game-suspend).
 
 Open reconciliation items (from S2/S3 agent notes, address before S10):
 - phase.rs: late-lock bootstrap on mid-ChampSelect start NOT ported; Swiftplay skips
