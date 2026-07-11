@@ -111,7 +111,27 @@ pub fn kill_all_modtools_processes(shared: &SharedOverlayProcess) {
     kill_matching_modtools(shared, false);
 }
 
+/// OS-level kill of leaked `runoverlay` `mod-tools.exe` processes WITHOUT
+/// touching any `InjectionManager`/`SharedOverlayProcess` lock. This is the
+/// deadlock-safe path: a skin injection holds the manager's `inner` mutex for
+/// the WHOLE game (its overlay babysit loop blocks until `runoverlay` exits),
+/// so if `runoverlay` never self-exits, the normal
+/// `InjectionManager::kill_all_runoverlay_processes` — which locks `inner` to
+/// reach the injector — can never run. Killing by OS enumeration here makes the
+/// stuck babysit loop's `try_wait` observe the dead child, return, and release
+/// `inner` + the `injection_in_progress` flag. Used by
+/// `InjectionManager::reset_stuck_injection` on ChampSelect entry.
+pub fn kill_runoverlay_processes_os() {
+    kill_matching_modtools_os(true);
+}
+
 fn kill_matching_modtools(shared: &SharedOverlayProcess, runoverlay_only: bool) {
+    kill_matching_modtools_os(runoverlay_only);
+    // Also stop our tracked process if it exists.
+    stop_overlay_process(shared);
+}
+
+fn kill_matching_modtools_os(runoverlay_only: bool) {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
@@ -149,9 +169,6 @@ fn kill_matching_modtools(shared: &SharedOverlayProcess, runoverlay_only: bool) 
     } else {
         log_info!("[INJECT] No {label} processes found to kill");
     }
-
-    // Also stop our tracked process if it exists.
-    stop_overlay_process(shared);
 }
 
 #[cfg(test)]

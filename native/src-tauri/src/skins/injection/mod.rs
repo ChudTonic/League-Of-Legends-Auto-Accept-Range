@@ -383,6 +383,29 @@ impl InjectionManager {
         success
     }
 
+    /// Heal a stuck injection state at the start of a new champ select. This is
+    /// the fix for the "one leaked overlay blacks out skins for the rest of the
+    /// session" bug: an injection holds `self.inner` for the WHOLE game (its
+    /// babysit loop blocks until `runoverlay` exits), and `runoverlay`
+    /// sometimes never self-exits — so `inner` stays locked and
+    /// `injection_in_progress` stays `true`, and every later pick is rejected by
+    /// the fast pre-check with "Injection already in progress". It ALSO leaks
+    /// the `mod-tools.exe` process (which then locks the installer).
+    ///
+    /// Crucially this must NOT lock `self.inner` (that's exactly what's stuck),
+    /// so it kills leaked `runoverlay` processes via OS enumeration and clears
+    /// the `injection_in_progress` flag directly. Killing the child makes any
+    /// stuck babysit loop's `try_wait` return, so it releases `inner` on its own
+    /// well before the next loadout injection fires. Safe to call on ChampSelect
+    /// entry: the previous game is definitively over, so no legitimate injection
+    /// is in flight.
+    pub fn reset_stuck_injection(&self) {
+        crate::skins::injection::process::kill_runoverlay_processes_os();
+        if self.injection_in_progress.swap(false, Ordering::SeqCst) {
+            log_warn!("[INJECT] Cleared a stuck injection lock from a previous game (leaked overlay)");
+        }
+    }
+
     /// Clean the injection system (ported from `InjectionManager.clean_system`).
     pub fn clean_system(&self) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());

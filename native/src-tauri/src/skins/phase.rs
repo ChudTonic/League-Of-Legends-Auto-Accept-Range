@@ -29,7 +29,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::lcu;
@@ -37,7 +37,7 @@ use crate::skins::lcu_ext::{self, ChampionSkinCache, SessionData};
 use crate::skins::slog::{log_info, log_warn};
 use crate::skins::state::SkinsShared;
 use crate::skins::SkinsState;
-use crate::LockExt;
+use crate::{AppState, LockExt};
 
 /// Consecutive null-phase (or LCU-unreachable) polls before treating it as a
 /// real disconnect — `PhaseThread._null_phase_streak` /
@@ -458,6 +458,16 @@ async fn champ_select_entry(
     }
 
     log_info!("[phase] Entering ChampSelect - resetting state for new game");
+
+    // Heal a stuck injection lock leaked by a previous game's overlay (a
+    // `runoverlay` that never self-exited holds the injection mutex +
+    // `injection_in_progress` flag forever, blacking out skins for every
+    // subsequent game this session). Runs OS-level so it can't deadlock on the
+    // very lock it's clearing. Also reaps the leaked `mod-tools.exe` that would
+    // otherwise lock the installer.
+    if let Some(injection) = app.state::<Arc<AppState>>().skins_injection.lock_safe().clone() {
+        injection.reset_stuck_injection();
+    }
 
     if let Some(auth) = lcu::cached_auth() {
         if let Some(ids) = lcu_ext::owned_skin_ids(client, &auth).await {
