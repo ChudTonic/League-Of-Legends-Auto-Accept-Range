@@ -56,14 +56,6 @@ const LOG_SEPARATOR_WIDTH: usize = 80;
 /// injection token (`"skin_1234"` / `"chroma_5678"`) from
 /// `ticker::resolve_injection_name`.
 pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id: u64, name: String, champion_name: String) {
-    if name.is_empty() {
-        log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
-        log_error!("INJECTION FAILED - NO SKIN ID AVAILABLE");
-        log_error!("   Loadout Timer: #{ticker_id}");
-        log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
-        return;
-    }
-
     let app_state = app.state::<Arc<AppState>>().inner().clone();
     if app_state.injection_blocked.load(Ordering::SeqCst) {
         log_warn!("[INJECT] Injection blocked (ranked kill-switch) - skipping trigger for {name}");
@@ -95,6 +87,38 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     {
         let mut shared = skins.shared.lock_safe();
         shared.last_hover_written = true;
+    }
+
+    // No own skin selected (this player kept their default / didn't pick one).
+    // We still owe the overlay any connected party peers' skins — inject those
+    // alone. Previously an empty name aborted the whole trigger, so NOT picking
+    // a skin silently dropped every teammate's skin too (the ARAM "she didn't
+    // pick, so she saw nobody's skin" bug). The ranked kill-switch above still
+    // applies.
+    if name.is_empty() {
+        let party_folders = stage_party_mods(&party_mgr).await;
+        if party_folders.is_empty() {
+            log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
+            log_error!("INJECTION SKIPPED - no own skin and no party skins to inject");
+            log_error!("   Loadout Timer: #{ticker_id}");
+            log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
+            injection.resume_if_suspended();
+            return;
+        }
+        let count = party_folders.len();
+        log_info!("[INJECT] No own skin selected - injecting {count} party-member skin(s) only");
+        spawn_game_end_watcher(skins.clone(), injection.clone());
+        let injection = injection.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if injection.inject_mods_only_immediately(&party_folders) {
+                log_info!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
+                log_info!("PARTY-ONLY INJECTION COMPLETED ({count} skin(s))");
+                log_info!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
+            } else {
+                log_error!("[INJECT] Party-only injection failed");
+            }
+        });
+        return;
     }
 
     let (ui_skin_id, selected_chroma_id, champ_id, owned_skin_ids, local_cell_id, random_mode_active) = {

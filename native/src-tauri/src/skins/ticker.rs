@@ -294,14 +294,11 @@ async fn fire_injection(app: &AppHandle, skins: &Arc<SkinsState>, client: &reqwe
     log_info!("[INJECT] Skin label: {label:?}");
     log_info!("[INJECT] Final name variable: {name:?}");
 
-    if let Some(name) = name {
-        trigger::trigger_injection(app.clone(), skins.clone(), ticker_id, name, champion_name).await;
-    } else {
-        log_error!("{}", "=".repeat(80));
-        log_error!("INJECTION FAILED - NO SKIN ID AVAILABLE");
-        log_error!("   Loadout Timer: #{ticker_id}");
-        log_error!("{}", "=".repeat(80));
-    }
+    // Always hand off to `trigger_injection`, even with no own skin resolved:
+    // an empty name now routes to a party-only injection (peer skins alone) so
+    // keeping your default skin no longer drops every teammate's skin. When
+    // there's also no party skin, `trigger_injection` logs the skip itself.
+    trigger::trigger_injection(app.clone(), skins.clone(), ticker_id, name.unwrap_or_default(), champion_name).await;
 }
 
 /// Universal game-launch injection entry for modes whose champ-select has no

@@ -246,6 +246,92 @@ impl InjectionManager {
         success
     }
 
+    /// Immediate mods-only injection: build the overlay from pre-staged mods
+    /// with NO primary skin. Same lock / game-monitor discipline as
+    /// `inject_skin_immediately`, minus the base-skin short-circuit (there is
+    /// no primary skin to classify). Used for a party peer who selected no
+    /// skin of their own but must still inject teammates' party skins — the
+    /// case that previously dropped ALL party skins (a peer sees nobody's
+    /// skin unless they themselves picked one).
+    pub fn inject_mods_only_immediately(&self, mod_names: &[String]) -> bool {
+        if mod_names.is_empty() {
+            return false;
+        }
+
+        if self.injection_in_progress.load(Ordering::SeqCst) {
+            log_warn!("[INJECT] Injection already in progress - skipping mods-only request");
+            return false;
+        }
+
+        let deadline = Instant::now() + INJECTION_LOCK_TIMEOUT;
+        let guard_opt = loop {
+            match self.inner.try_lock() {
+                Ok(guard) => break Some(guard),
+                Err(TryLockError::Poisoned(p)) => break Some(p.into_inner()),
+                Err(TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        break None;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        };
+        let Some(mut guard) = guard_opt else {
+            log_warn!("[INJECT] Could not acquire injection lock - another injection in progress");
+            return false;
+        };
+
+        self.injection_in_progress.store(true, Ordering::SeqCst);
+        log_info!("[INJECT] Mods-only injection started - lock acquired ({} mod(s))", mod_names.len());
+
+        let success = self.do_inject_mods_only_locked(&mut guard, mod_names);
+
+        log_info!("[INJECT] Mods-only injection completed - lock released");
+        guard.game_monitor.stop();
+        self.injection_in_progress.store(false, Ordering::SeqCst);
+
+        success
+    }
+
+    /// Locked body of `inject_mods_only_immediately` (mirrors
+    /// `do_inject_locked`'s init/threshold/monitor guards, then calls the
+    /// injector's mods-only overlay builder).
+    fn do_inject_mods_only_locked(&self, inner: &mut Inner, mod_names: &[String]) -> bool {
+        self.ensure_initialized(inner);
+        if !inner.initialized || inner.injector.is_none() {
+            log_error!("[INJECT] Cannot inject mods-only - League game directory not found");
+            return false;
+        }
+
+        let now = Instant::now();
+        if let Some(last) = inner.last_injection_time {
+            let elapsed = now.duration_since(last).as_secs_f64();
+            if elapsed < inner.injection_threshold {
+                let remaining = inner.injection_threshold - elapsed;
+                log_info!("[INJECT] Skipping mods-only injection (cooldown {remaining:.2}s remaining)");
+                return false;
+            }
+        }
+
+        if !inner.game_monitor.is_active() {
+            log_info!("[INJECT] Starting game monitor for mods-only injection");
+            inner.game_monitor.start();
+        }
+
+        let Some(injector) = inner.injector.as_ref() else { return false };
+        let result = injector.inject_mods_only(&mut inner.game_monitor, mod_names);
+
+        let success = matches!(result, Ok(true));
+        if let Err(e) = &result {
+            log_error!("[INJECT] inject_mods_only error: {e}");
+        }
+        if success {
+            inner.last_skin_name = Some("<party-mods-only>".to_string());
+            inner.last_injection_time = Some(now);
+        }
+        success
+    }
+
     /// The locked body of `inject_skin_immediately`, factored out so the
     /// caller can hold `guard` across both this call and the `stop()` that
     /// follows it without fighting the borrow checker over a captured

@@ -642,6 +642,7 @@ impl PartyManager {
                 skin["is_custom"] = json!(true);
             }
         }
+        log_info!("[SKIN_SEND] Broadcasting our pick: champion {champion_id}, skin {skin_id}, chroma {chroma_id:?}");
         relay.send_skin(Some(skin));
     }
 
@@ -676,16 +677,24 @@ impl PartyManager {
                 continue;
             }
             let champion_id = skin.get("champion_id").and_then(Value::as_i64).unwrap_or(0);
+            let chroma_id = skin.get("chroma_id").and_then(Value::as_i64);
+            let is_custom = skin.get("is_custom").and_then(Value::as_bool).unwrap_or(false);
+            // A peer's base skin (`champion_id * 1000`, no chroma, not a custom
+            // mod) is their default — nothing to inject. Skip it silently
+            // instead of hunting for a nonexistent ZIP and warning (the ARAM
+            // "peer didn't pick a skin" case broadcasts the base id).
+            if !is_custom && chroma_id.is_none() && champion_id > 0 && skin_id == champion_id * 1000 {
+                continue;
+            }
             if let Some(expected) = team_champions.get(&member.summoner_id) {
                 if *expected != champion_id {
                     log_warn!("[SKIN_COLLECT] Champion mismatch for {}", member.summoner_id);
                     continue;
                 }
             }
-            let chroma_id = skin.get("chroma_id").and_then(Value::as_i64);
 
             let mut custom_mod_relative_path = None;
-            if skin.get("is_custom").and_then(Value::as_bool).unwrap_or(false) {
+            if is_custom {
                 let Some(hash) = skin.get("custom_mod_hash").and_then(Value::as_str) else { continue };
                 match Self::find_local_mod_by_hash(hash) {
                     Some(path) => {

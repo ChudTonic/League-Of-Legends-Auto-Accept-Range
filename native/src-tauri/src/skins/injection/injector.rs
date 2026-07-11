@@ -136,6 +136,45 @@ impl SkinInjector {
         }
     }
 
+    /// Build the overlay from ALREADY-STAGED mods only, with no primary skin
+    /// — the "mods only, no primary" entry point the S5 port deferred. Used
+    /// when this player picked no skin of their own but still owes the overlay
+    /// their party teammates' skins (so a peer who keeps their default skin
+    /// still shows everyone else's picks). The caller must have staged
+    /// `mod_names` into `mods_dir` already (e.g. via
+    /// `PartyManager::prepare_party_mods` through `stage_party_mods`); this
+    /// never resolves/extracts a primary skin and never cleans the mods dir
+    /// (that would wipe the just-staged mods).
+    pub fn inject_mods_only(&self, game_monitor: &mut GameMonitor, mod_names: &[String]) -> Result<bool, String> {
+        if mod_names.is_empty() {
+            return Ok(false);
+        }
+        let injection_start = Instant::now();
+        storage::clean_overlay_dir(&self.overlay_dir);
+        log_info!("[INJECT] Mods-only overlay from {} staged mod(s): {}", mod_names.len(), mod_names.join(", "));
+
+        let tools = tools::detect_tools(&self.tools_dir);
+        let result = overlay::mk_run_overlay(
+            &tools,
+            &self.mods_dir,
+            &self.overlay_dir,
+            &self.game_dir,
+            mod_names,
+            &self.process,
+            game_monitor,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let total_duration = injection_start.elapsed().as_secs_f64();
+        if result == 0 {
+            log_info!("[INJECT] Mods-only completed in {total_duration:.2}s");
+            Ok(true)
+        } else {
+            log_warn!("[INJECT] Mods-only failed - timeout or error after {total_duration:.2}s");
+            Ok(false)
+        }
+    }
+
     /// Clean the injection system (ported from `SkinInjector.clean_system`).
     pub fn clean_system(&self) -> bool {
         if self.mods_dir.exists() {
