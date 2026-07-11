@@ -1,9 +1,19 @@
-# Art TODO — assets still showing Rose-branded artwork
+# Art TODO — DONE (2026-07-10)
+
+RESOLVED: all the rose-flower assets below were replaced with a generated Chud
+neon-"C" emblem set (magenta→cyan gradient + glow, matching the Tauri app icon
+at `native/src-tauri/icons/`). Regenerated via `scratchpad/gen_chud_art.py`:
+`chud_emblem.png`, `chud_logo.png`, `icon.png`, `icon.ico`, `tray_ready.png`,
+`tray_starting.png`, and `CHUD-Jade/assets/logo.png`. If Josh later wants
+bespoke/higher-fidelity brand art, it drops in over these same filenames.
+
+The original inventory (now historical) follows.
+
+---
 
 S8 renamed files and rebranded plugin text, but the *pixels* underneath a few
-renamed assets are still literal rose-flower artwork inherited from the Rose
-project. These need real Chud-branded replacement art from Josh before
-release. Everything else in `native/src-tauri/resources/assets/` (dice icons,
+renamed assets were still literal rose-flower artwork inherited from the Rose
+project. Everything else in `native/src-tauri/resources/assets/` (dice icons,
 historic/random flag icons, HOL tier badges, champ-select backgrounds, the
 per-skin button folders) is neutral or League-official-style art, not
 Rose-branded, and needs no changes.
