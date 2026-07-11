@@ -105,6 +105,11 @@ struct Inner {
     /// `_skin_broadcast_loop`'s `last_skin_id`/`last_chroma_id`/
     /// `last_custom_mod` locals.
     last_broadcast: Option<(Option<i64>, Option<i64>, Option<String>)>,
+    /// The lobby `partyId` whose auto-derived room we're currently connected
+    /// to, or `None` when connected to our personal room (solo / manual). The
+    /// auto-room loop compares this against the live lobby to decide when to
+    /// switch rooms as we join/leave/change lobbies.
+    current_party_id: Option<String>,
 }
 
 /// Main orchestrator for party mode (ported from `PartyManager`). Store as
@@ -150,6 +155,7 @@ impl PartyManager {
                 relay: None,
                 peers: HashMap::new(),
                 last_broadcast: None,
+                current_party_id: None,
             }),
         })
     }
@@ -198,7 +204,17 @@ impl PartyManager {
         let key = token::generate_key();
         let timestamp = unix_now() as u32;
         let token_str = token::encode_token(summoner_id, &key, timestamp);
-        let room_key = relay::compute_room_key(summoner_id, &key);
+
+        // Auto-party: if we're already in a lobby, join the room derived from
+        // the shared lobby `partyId` so every Chud user in the lobby converges
+        // automatically — no token exchange. Otherwise fall back to our
+        // personal room (still joinable via a pasted token). `auto_room_loop`
+        // keeps this in sync as we join/leave/switch lobbies.
+        let party_id = lcu_ext::get_lobby_party_id(&self.http_client, &auth).await;
+        let room_key = match &party_id {
+            Some(pid) => relay::compute_lobby_room_key(pid),
+            None => relay::compute_room_key(summoner_id, &key),
+        };
 
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -209,6 +225,7 @@ impl PartyManager {
             inner.enabled = true;
             inner.peers.clear();
             inner.last_broadcast = None;
+            inner.current_party_id = party_id;
         }
 
         // Best-effort: a failed relay connect logs a warning and leaves
@@ -462,6 +479,68 @@ impl PartyManager {
 
         let skin_mgr = Arc::clone(self);
         tauri::async_runtime::spawn(async move { skin_mgr.skin_broadcast_loop(generation).await });
+
+        let auto_mgr = Arc::clone(self);
+        tauri::async_runtime::spawn(async move { auto_mgr.auto_room_loop(generation).await });
+    }
+
+    /// Auto-party: watch the LCU lobby's `partyId` and switch relay rooms as it
+    /// changes, so Chud users in the same lobby converge in one room with no
+    /// token exchange. On entering / switching a lobby we join that lobby's
+    /// derived room; on leaving we fall back to our personal room. Exits once
+    /// `generation` is stale.
+    async fn auto_room_loop(self: Arc<Self>, generation: u64) {
+        loop {
+            tokio::time::sleep(LOBBY_CHECK_INTERVAL).await;
+            if self.generation.load(Ordering::SeqCst) != generation {
+                break;
+            }
+            let Some(auth) = lcu::cached_auth() else { continue };
+            let party_id = lcu_ext::get_lobby_party_id(&self.http_client, &auth).await;
+
+            let (my_id, my_name, my_key, current_pid) = {
+                let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if !inner.enabled {
+                    continue;
+                }
+                (inner.my_summoner_id, inner.my_summoner_name.clone(), inner.my_key, inner.current_party_id.clone())
+            };
+            let Some(my_id) = my_id else { continue };
+
+            match (party_id.as_deref(), current_pid.as_deref()) {
+                // Entered a lobby, or switched to a different one -> join it.
+                (Some(pid), cur) if cur != Some(pid) => {
+                    log_info!("[PARTY] Auto-joining lobby room (party {}…)", &pid[..pid.len().min(8)]);
+                    let room = relay::compute_lobby_room_key(pid);
+                    self.switch_room(room, Some(pid.to_string()), my_id, my_name).await;
+                }
+                // Left the lobby -> return to our personal (token) room.
+                (None, Some(_)) => {
+                    if let Some(key) = my_key {
+                        log_info!("[PARTY] Left lobby - returning to personal room");
+                        let room = relay::compute_room_key(my_id, &key);
+                        self.switch_room(room, None, my_id, my_name).await;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Disconnect the current relay + drop its peers, then join `room_key`.
+    /// Used by the auto-room loop when the lobby changes.
+    async fn switch_room(self: &Arc<Self>, room_key: String, party_id: Option<String>, my_id: u64, my_name: String) {
+        let old = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.current_party_id = party_id;
+            inner.peers.clear();
+            inner.relay.take()
+        };
+        if let Some(old) = old {
+            old.disconnect();
+        }
+        self.connect_room(room_key, my_id, my_name).await;
+        self.broadcast_state();
     }
 
     /// `PartyManager._lobby_check_loop` — updates each peer's `in_lobby`
@@ -912,6 +991,7 @@ mod tests {
             relay: None,
             peers: HashMap::new(),
             last_broadcast: None,
+            current_party_id: None,
         };
         let value = json!({
             "enabled": inner.enabled,

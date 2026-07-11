@@ -57,6 +57,20 @@ pub fn compute_room_key(host_summoner_id: u64, host_key: &[u8; 32]) -> String {
     hex[..32].to_string()
 }
 
+/// Deterministic room key for a League lobby. Every member of a lobby sees the
+/// same `partyId` (a GUID) from the LCU, so every Chud user in that lobby
+/// derives the SAME room and auto-joins it — no token exchange needed. The
+/// `"chud-lobby:"` prefix namespaces it so it can never collide with a
+/// personal `compute_room_key` room.
+pub fn compute_lobby_room_key(party_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"chud-lobby:");
+    hasher.update(party_id.as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    hex[..32].to_string()
+}
+
 /// One entry from a `{"type":"members",...}` broadcast.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RelayMember {

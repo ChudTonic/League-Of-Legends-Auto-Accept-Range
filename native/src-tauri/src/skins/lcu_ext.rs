@@ -784,6 +784,15 @@ fn is_swiftplay_lobby_data(data: &Value, already_swiftplay: bool) -> bool {
     already_swiftplay
 }
 
+/// The current lobby's `partyId` (a GUID shared identically by every member of
+/// the lobby), or `None` when not in a lobby. This is the anchor for
+/// auto-party: all Chud users in the same lobby derive the same relay room from
+/// it, so they converge automatically with no token exchange.
+pub async fn get_lobby_party_id(client: &reqwest::Client, auth: &Auth) -> Option<String> {
+    let lobby = shared_cache().get(client, auth, "/lol-lobby/v2/lobby", DEFAULT_CACHE_TTL).await?;
+    lobby.get("partyId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
 /// Try each lobby-ish endpoint until one looks like Swiftplay lobby data.
 /// `already_swiftplay` mirrors the Python `self.game_mode.is_swiftplay`
 /// short-circuit (any lobby data is treated as Swiftplay once already
