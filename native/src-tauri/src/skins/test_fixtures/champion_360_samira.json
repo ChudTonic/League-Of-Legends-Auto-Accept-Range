@@ -1,0 +1,192 @@
+{
+  "id": 360,
+  "name": "Samira",
+  "skins": [
+    {
+      "id": 360000,
+      "name": "Samira",
+      "isBase": true,
+      "chromas": []
+    },
+    {
+      "id": 360001,
+      "name": "PsyOps Samira",
+      "isBase": false,
+      "chromas": [
+        {
+          "id": 360002,
+          "name": "PsyOps Samira (Ruby)"
+        },
+        {
+          "id": 360003,
+          "name": "PsyOps Samira (Sapphire)"
+        },
+        {
+          "id": 360004,
+          "name": "PsyOps Samira (Catseye)"
+        },
+        {
+          "id": 360005,
+          "name": "PsyOps Samira (Amethyst)"
+        },
+        {
+          "id": 360006,
+          "name": "PsyOps Samira (Rose Quartz)"
+        },
+        {
+          "id": 360007,
+          "name": "PsyOps Samira (Peridot)"
+        },
+        {
+          "id": 360008,
+          "name": "PsyOps Samira (Hunter)"
+        },
+        {
+          "id": 360009,
+          "name": "PsyOps Samira (Obsidian)"
+        }
+      ]
+    },
+    {
+      "id": 360010,
+      "name": "Space Groove Samira",
+      "isBase": false,
+      "chromas": [
+        {
+          "id": 360011,
+          "name": "Space Groove Samira (Ruby)"
+        },
+        {
+          "id": 360012,
+          "name": "Space Groove Samira (Obsidian)"
+        },
+        {
+          "id": 360013,
+          "name": "Space Groove Samira (Emerald)"
+        },
+        {
+          "id": 360014,
+          "name": "Space Groove Samira (Aquamarine)"
+        },
+        {
+          "id": 360015,
+          "name": "Space Groove Samira (Amethyst)"
+        },
+        {
+          "id": 360016,
+          "name": "Space Groove Samira (Pearl)"
+        },
+        {
+          "id": 360017,
+          "name": "Space Groove Samira (Rose Quartz)"
+        },
+        {
+          "id": 360018,
+          "name": "Space Groove Samira (Rainbow)"
+        },
+        {
+          "id": 360019,
+          "name": "Space Groove Samira (Disco)"
+        }
+      ]
+    },
+    {
+      "id": 360020,
+      "name": "High Noon Samira",
+      "isBase": false,
+      "chromas": [
+        {
+          "id": 360021,
+          "name": "High Noon Samira (Ruby)"
+        },
+        {
+          "id": 360022,
+          "name": "High Noon Samira (Rose Quartz)"
+        },
+        {
+          "id": 360023,
+          "name": "High Noon Samira (Sapphire)"
+        },
+        {
+          "id": 360024,
+          "name": "High Noon Samira (Emerald)"
+        },
+        {
+          "id": 360025,
+          "name": "High Noon Samira (Tanzanite)"
+        },
+        {
+          "id": 360026,
+          "name": "High Noon Samira (Catseye)"
+        },
+        {
+          "id": 360027,
+          "name": "High Noon Samira (Obsidian)"
+        },
+        {
+          "id": 360028,
+          "name": "High Noon Samira (Turquoise)"
+        },
+        {
+          "id": 360029,
+          "name": "High Noon Samira (Nomad)"
+        },
+        {
+          "id": 360034,
+          "name": "High Noon Samira (Paragon)"
+        }
+      ]
+    },
+    {
+      "id": 360030,
+      "name": "Soul Fighter Samira",
+      "isBase": false,
+      "chromas": []
+    },
+    {
+      "id": 360033,
+      "name": "Masque of the Black Rose Samira",
+      "isBase": false,
+      "chromas": []
+    },
+    {
+      "id": 360035,
+      "name": "Battle Professor Samira",
+      "isBase": false,
+      "chromas": [
+        {
+          "id": 360036,
+          "name": "Battle Professor Samira (Ruby)"
+        },
+        {
+          "id": 360037,
+          "name": "Battle Professor Samira (Catseye)"
+        },
+        {
+          "id": 360038,
+          "name": "Battle Professor Samira (Emerald)"
+        },
+        {
+          "id": 360039,
+          "name": "Battle Professor Samira (Rose Quartz)"
+        },
+        {
+          "id": 360040,
+          "name": "Battle Professor Samira (Sapphire)"
+        },
+        {
+          "id": 360041,
+          "name": "Battle Professor Samira (Amethyst)"
+        },
+        {
+          "id": 360042,
+          "name": "Battle Professor Samira (Pearl)"
+        },
+        {
+          "id": 360043,
+          "name": "Battle Professor Samira (Obsidian)"
+        }
+      ]
+    }
+  ]
+}

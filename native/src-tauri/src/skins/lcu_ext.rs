@@ -445,7 +445,14 @@ pub async fn scrape_champion_skins(
         }
     }
     let champ = champ?;
+    Some(build_skin_cache(champ, champion_id))
+}
 
+/// Pure transform from parsed `/champions/{id}.json` data into a
+/// `ChampionSkinCache` — factored out of `scrape_champion_skins` so the
+/// skin-name resolution pipeline can be replay-tested against recorded LCU
+/// champion payloads without a live client (see `lcu_replay` tests).
+pub fn build_skin_cache(champ: ChampionData, champion_id: i64) -> ChampionSkinCache {
     let mut cache = ChampionSkinCache {
         champion_id: Some(champion_id),
         champion_name: Some(champ.name.unwrap_or_else(|| format!("Champion{champion_id}"))),
@@ -485,7 +492,7 @@ pub async fn scrape_champion_skins(
         cache.skins.push(info);
     }
 
-    Some(cache)
+    cache
 }
 
 /// The League client sometimes appends a chroma colour as a locale-specific
@@ -1107,6 +1114,67 @@ mod tests {
             find_skin_by_text(&cache, "Prestige Skin (Renegado)"),
             Some((1000, "Prestige Skin".to_string(), 1.0))
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // LCU replay: drive the real skin-name resolution pipeline against a
+    // champion payload captured verbatim from a live client
+    // (`/lol-game-data/assets/v1/champions/360.json`, Samira). This is the
+    // headless regression guard for the exact bug that hit a real user — the
+    // client reports a skin by its localized *display name*, and we must
+    // resolve it back to the right skin id before injection.
+    // ---------------------------------------------------------------------
+    const SAMIRA_FIXTURE: &str = include_str!("test_fixtures/champion_360_samira.json");
+
+    fn samira_cache() -> ChampionSkinCache {
+        let champ: ChampionData = serde_json::from_str(SAMIRA_FIXTURE).expect("fixture parses as ChampionData");
+        build_skin_cache(champ, 360)
+    }
+
+    #[test]
+    fn lcu_replay_samira_fixture_builds_the_expected_cache() {
+        let cache = samira_cache();
+        assert_eq!(cache.champion_id, Some(360));
+        assert_eq!(cache.champion_name.as_deref(), Some("Samira"));
+        assert_eq!(cache.skins.len(), 7, "captured Samira payload had 7 skins");
+        // Every skin is round-trippable by its exact name.
+        for skin in &cache.skins {
+            assert_eq!(
+                cache.get_skin_by_name(&skin.skin_name).map(|s| s.skin_id),
+                Some(skin.skin_id),
+                "skin {:?} must be resolvable by name",
+                skin.skin_name
+            );
+        }
+    }
+
+    #[test]
+    fn lcu_replay_resolves_soul_fighter_samira_the_way_the_client_reports_it() {
+        let cache = samira_cache();
+        // Exact display name -> confident id (the wife's case).
+        assert_eq!(
+            find_skin_by_text(&cache, "Soul Fighter Samira"),
+            Some((360030, "Soul Fighter Samira".to_string(), 1.0))
+        );
+        // Client sometimes appends a localized chroma suffix; still exact id.
+        let (id, name, sim) =
+            find_skin_by_text(&cache, "Soul Fighter Samira (Renegado)").expect("suffixed name still resolves");
+        assert_eq!((id, name.as_str()), (360030, "Soul Fighter Samira"));
+        assert_eq!(sim, 1.0);
+        // A near-miss (dropped a letter) still lands on the right skin via the
+        // Levenshtein fallback, just below full confidence.
+        let (fuzzy_id, _, fuzzy_sim) =
+            find_skin_by_text(&cache, "Soul Fighter Samra").expect("typo resolves fuzzily");
+        assert_eq!(fuzzy_id, 360030);
+        assert!(fuzzy_sim > 0.9 && fuzzy_sim < 1.0, "fuzzy match should be high-but-not-perfect, got {fuzzy_sim}");
+    }
+
+    #[test]
+    fn lcu_replay_resolves_base_samira() {
+        let cache = samira_cache();
+        let (id, _, sim) = find_skin_by_text(&cache, "Samira").expect("base skin resolves");
+        assert_eq!(id, 360000, "base Samira is skin id 360000");
+        assert_eq!(sim, 1.0);
     }
 
     #[test]
