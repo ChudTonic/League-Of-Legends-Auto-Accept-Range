@@ -15,6 +15,7 @@ pub mod party;
 pub mod paths;
 pub mod pengu;
 pub mod phase;
+pub mod skin_db;
 pub mod slog;
 pub mod state;
 pub mod swiftplay;

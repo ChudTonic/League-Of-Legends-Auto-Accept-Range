@@ -166,9 +166,12 @@ async fn handle_skin_hover(ctx: &BridgeContext, skin_name: String) {
     let (skin_id, resolved_name) = match &cache {
         Some(c) => match lcu_ext::find_skin_by_text(c, &trimmed) {
             Some((id, name, _similarity)) => (Some(id), name),
-            None => (None, trimmed.clone()),
+            // Live LCU scrape has the champion but couldn't match this name —
+            // fall back to the complete offline skin_ids.json DB.
+            None => resolve_offline(ctx, &trimmed),
         },
-        None => (None, trimmed.clone()),
+        // No live champion data at all — offline DB is the only hope.
+        None => resolve_offline(ctx, &trimmed),
     };
 
     {
@@ -180,6 +183,20 @@ async fn handle_skin_hover(ctx: &BridgeContext, skin_name: String) {
 
     let has_chromas = skin_has_chromas(cache.as_ref(), skin_id);
     ctx.handle.broadcast_skin_state(resolved_name, skin_id, has_chromas);
+}
+
+/// Offline skin-name→ID fallback via `skin_db` (the downloaded `skin_ids.json`),
+/// used when the live LCU champion scrape can't resolve a hovered skin — the
+/// live data is thin on some clients and during ARAM's rapid bench swaps, which
+/// left `last_hovered_skin_id` empty and broke injection ("NO SKIN ID"). Returns
+/// `(Some(id), name)` on a hit, `(None, name)` otherwise.
+fn resolve_offline(ctx: &BridgeContext, trimmed: &str) -> (Option<i64>, String) {
+    let lang = { ctx.skins.shared.lock_safe().current_language.clone() };
+    let id = crate::skins::skin_db::resolve_skin_id(trimmed, lang.as_deref());
+    if let Some(id) = id {
+        log_info!("[skin-db] Resolved '{trimmed}' -> {id} from offline DB (live scrape missed it)");
+    }
+    (id, trimmed.to_string())
 }
 
 /// `Broadcaster._skin_has_chromas`, ported verbatim (special-case ID lists
