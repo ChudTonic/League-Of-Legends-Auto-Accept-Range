@@ -42,17 +42,46 @@ pub const ENABLE_RUNOVERLAY_PRIORITY_BOOST: bool = false;
 
 /// `subprocess.Popen(..., timeout=120)`'s default mkoverlay timeout (ported
 /// verbatim from `OverlayManager.mk_run_overlay`'s `timeout: int = 120`).
+/// This is the ABSOLUTE ceiling for a build with no suspended game; a build
+/// holding a suspended game hostage is bounded much tighter by the
+/// auto-resume abort below.
 const MKOVERLAY_TIMEOUT: Duration = Duration::from_secs(120);
 /// `PROCESS_MONITOR_SLEEP_S` — poll interval while babysitting the running
 /// `runoverlay` child.
 const PROCESS_MONITOR_SLEEP: Duration = Duration::from_millis(500);
+/// mkoverlay wait-loop poll interval; the overlay-size check below runs
+/// every `SIZE_CHECK_EVERY` of these.
+const MKOVERLAY_POLL: Duration = Duration::from_millis(50);
+const SIZE_CHECK_EVERY: u32 = 40; // ~every 2s
+/// A single-champion overlay is tens of MB; even a heavy multi-mod set stays
+/// well under this. Crossing it means cslol's fuzzy WAD matching decided a
+/// mod (typically a RAW/loose-file custom fantome with shared asset paths)
+/// touches nearly every WAD in the game and is rebuilding a full game copy
+/// (observed 2026-07-12: 17 GB / 156 WADs for a 4-mod set that legitimately
+/// touched 4 WADs). Warn loudly so the offending mod set is identifiable.
+const OVERLAY_SIZE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How the mkoverlay wait loop ended.
+enum BuildWait {
+    Exited(std::process::ExitStatus),
+    /// Hit `MKOVERLAY_TIMEOUT`.
+    TimedOut,
+    /// The game monitor's auto-resume safety fired: the game is now running
+    /// WITHOUT the overlay hooked, so finishing the build is pointless — it
+    /// would only keep grinding the disk (at boosted priority) against the
+    /// loading game. This was the "corrupted League" incident chain: 60s
+    /// frozen game -> forced resume -> another 60s of full-throttle WAD
+    /// writes during load -> wedged Riot session needing reboot + repair.
+    GameAutoResumed,
+}
 
 /// Create the overlay (`mkoverlay`) and run it (`runoverlay`), resuming the
 /// suspended game exactly when `runoverlay` starts (ported from
 /// `OverlayManager.mk_run_overlay`).
 ///
 /// Returns `Ok(0)` on success, or `Ok(<code>)` mirroring one of Python's
-/// sentinel return codes (`127` missing tool, `124` mkoverlay timeout, `1`
+/// sentinel return codes (`127` missing tool, `124` mkoverlay timeout, `125`
+/// build aborted because the game auto-resumed without it, `1`
 /// general error, or the child's own nonzero exit code) — wrapped in
 /// `Result` per the S3 interface contract, but every failure path Python
 /// handled without raising stays an `Ok` here too; `Err` is reserved for
@@ -120,34 +149,68 @@ pub fn mk_run_overlay(
     let stderr_thread = std::thread::spawn(move || drain_pipe(stderr_pipe));
 
     let deadline = mkoverlay_start + MKOVERLAY_TIMEOUT;
-    let status = loop {
+    let mut polls = 0u32;
+    let mut size_warned = false;
+    let wait_result = loop {
         match child.try_wait() {
-            Ok(Some(s)) => break Some(s),
+            Ok(Some(s)) => break BuildWait::Exited(s),
             Ok(None) => {
-                if Instant::now() >= deadline {
-                    break None;
+                if game_monitor.auto_resume_fired() {
+                    break BuildWait::GameAutoResumed;
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                if Instant::now() >= deadline {
+                    break BuildWait::TimedOut;
+                }
+                polls += 1;
+                if !size_warned && polls % SIZE_CHECK_EVERY == 0 && dir_size(overlay_dir) > OVERLAY_SIZE_WARN_BYTES {
+                    size_warned = true;
+                    log_warn!(
+                        "[INJECT] Overlay build exceeded {} GiB and is still growing - a mod in this set ({}) is forcing a near-full-game WAD rebuild (usually a RAW/loose-file custom mod with shared asset paths). Repackage it as a proper WAD mod.",
+                        OVERLAY_SIZE_WARN_BYTES / (1024 * 1024 * 1024),
+                        mod_names.join(", ")
+                    );
+                }
+                std::thread::sleep(MKOVERLAY_POLL);
             }
             Err(e) => {
                 log_error!("[INJECT] mkoverlay error: {e} - monitor will auto-resume if needed");
+                let _ = child.kill();
+                let _ = child.wait();
+                cleanup_failed_build(mods_dir, overlay_dir);
                 return Ok(1);
             }
         }
     };
 
-    let Some(status) = status else {
-        let _ = child.kill();
-        let _ = child.wait();
-        let mut all_lines = stdout_thread.join().unwrap_or_default();
-        all_lines.extend(stderr_thread.join().unwrap_or_default());
-        if all_lines.is_empty() {
-            log_warn!("[INJECT] mkoverlay timeout - no output captured");
-        } else {
-            let tail_start = all_lines.len().saturating_sub(10);
-            log_warn!("[INJECT] mkoverlay timeout - last output: {}", all_lines[tail_start..].join("; "));
+    let status = match wait_result {
+        BuildWait::Exited(s) => s,
+        BuildWait::GameAutoResumed => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_thread.join();
+            let _ = stderr_thread.join();
+            log_error!(
+                "[INJECT] Game auto-resumed while the overlay was still building ({:.1}s in) - aborting mkoverlay; skins are skipped this game. The build was too slow to hook before the safety limit (mods: {}).",
+                mkoverlay_start.elapsed().as_secs_f64(),
+                mod_names.join(", ")
+            );
+            cleanup_failed_build(mods_dir, overlay_dir);
+            return Ok(125);
         }
-        return Ok(124);
+        BuildWait::TimedOut => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let mut all_lines = stdout_thread.join().unwrap_or_default();
+            all_lines.extend(stderr_thread.join().unwrap_or_default());
+            if all_lines.is_empty() {
+                log_warn!("[INJECT] mkoverlay timeout - no output captured");
+            } else {
+                let tail_start = all_lines.len().saturating_sub(10);
+                log_warn!("[INJECT] mkoverlay timeout - last output: {}", all_lines[tail_start..].join("; "));
+            }
+            cleanup_failed_build(mods_dir, overlay_dir);
+            return Ok(124);
+        }
     };
     let _ = stdout_thread.join();
     let _ = stderr_thread.join();
@@ -157,10 +220,21 @@ pub fn mk_run_overlay(
     if !status.success() {
         let code = status.code().unwrap_or(1);
         log_error!("[INJECT] mkoverlay failed with return code: {code}");
+        cleanup_failed_build(mods_dir, overlay_dir);
         return Ok(code);
     }
 
     log_info!("[INJECT] mkoverlay completed in {:.2}s", mkoverlay_duration.as_secs_f64());
+
+    // Build finished, but if the safety net released the game in the meantime
+    // (race: build completes a beat after the auto-resume fired), the game is
+    // already loading vanilla assets — hooking now yields partial/no skins.
+    // Treat it like the abort case instead of pretending the injection worked.
+    if game_monitor.auto_resume_fired() {
+        log_error!("[INJECT] Game auto-resumed before runoverlay could start - skipping overlay this game");
+        cleanup_failed_build(mods_dir, overlay_dir);
+        return Ok(125);
+    }
 
     // Wipe extracted skin files now that mkoverlay is done with them, and
     // hide the overlay files so they can't be easily browsed.
@@ -230,18 +304,41 @@ fn drain_pipe(pipe: impl Read) -> Vec<String> {
 }
 
 /// Delete extracted skin files immediately after mkoverlay consumes them
-/// (ported from `OverlayManager._wipe_mods_dir`).
+/// (ported from `OverlayManager._wipe_mods_dir`). Junction-safe: the custom
+/// mod path stages entries as junctions into the extract cache / the user's
+/// mod library, which must be unlinked, never recursed into.
 fn wipe_dir_contents(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let _ = std::fs::remove_dir_all(&path);
-        } else {
-            let _ = std::fs::remove_file(&path);
-        }
+        crate::skins::injection::zips::safe_remove_entry(&entry.path());
     }
     log_info!("[INJECT] Wiped mods directory after mkoverlay");
+}
+
+/// Failure-path cleanup: unlink staged mods and delete the (possibly
+/// multi-GB, partially-written) overlay so an aborted build never leaves a
+/// carcass on disk (observed 2026-07-12: a killed 122s build left 17 GB in
+/// the overlay dir until the next injection happened to clean it).
+fn cleanup_failed_build(mods_dir: &Path, overlay_dir: &Path) {
+    wipe_dir_contents(mods_dir);
+    let _ = std::fs::remove_dir_all(overlay_dir);
+    let _ = std::fs::create_dir_all(overlay_dir);
+    log_info!("[INJECT] Cleaned mods + overlay directories after failed build");
+}
+
+/// Recursive directory size; cheap for the overlay's ~hundreds of entries.
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            total += dir_size(&path);
+        } else if let Ok(meta) = entry.metadata() {
+            total += meta.len();
+        }
+    }
+    total
 }
 
 /// Delete overlay WAD files after runoverlay finishes, recreating the empty

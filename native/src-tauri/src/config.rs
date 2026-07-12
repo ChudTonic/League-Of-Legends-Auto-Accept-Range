@@ -80,6 +80,9 @@ pub struct SkinsCfg {
     /// `GameMonitor`'s unconditional auto-resume safety timeout — never
     /// leave the game suspended longer than this even if `runoverlay` never
     /// starts. `GameMonitor::set_auto_resume_timeout` clamps 1..=180s.
+    /// Default 25s (was 60s): a game frozen ~60s at launch misses the Riot
+    /// client/Vanguard startup handshake and wedges the session until a
+    /// reboot; 25s still covers the slowest legitimate overlay builds.
     pub monitor_auto_resume_timeout_secs: f64,
 }
 
@@ -91,7 +94,7 @@ impl Default for SkinsCfg {
             enabled: false,
             auto_download_skins: true,
             party_relay_url: String::new(),
-            monitor_auto_resume_timeout_secs: 60.0,
+            monitor_auto_resume_timeout_secs: 25.0,
         }
     }
 }

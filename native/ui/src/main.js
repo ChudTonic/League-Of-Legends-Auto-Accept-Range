@@ -437,7 +437,7 @@ async function renderDiagnostics() {
 // plugins, not this page — see docs/SKINS_PORT.md.
 const DEFAULT_SKINS_STATE = {
   enabled: false, bridgePort: null, penguActive: false, skinsDownloaded: false, hashesReady: false,
-  leaguePath: "", injectionThresholdMs: 300, autoResumeSecs: 60, autoDownload: true,
+  leaguePath: "", injectionThresholdMs: 300, autoResumeSecs: 25, autoDownload: true,
   party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [] },
   diagnostics: { bridgePort: null, penguActive: false, toolsAvailable: false, dllValid: false, skinsDownloaded: false, hashesReady: false, dataDir: "" },
 };

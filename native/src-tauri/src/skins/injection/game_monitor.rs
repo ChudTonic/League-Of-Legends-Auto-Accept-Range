@@ -51,7 +51,19 @@ const RAPID_CHECKS: u32 = 10;
 const RAPID_INTERVAL: Duration = Duration::from_millis(5);
 const RESUME_MAX_ATTEMPTS: u32 = 3; // GAME_RESUME_MAX_ATTEMPTS
 const RESUME_VERIFY_WAIT: Duration = Duration::from_millis(100); // GAME_RESUME_VERIFICATION_WAIT_S
-const DEFAULT_AUTO_RESUME_SECS: f64 = 60.0;
+/// 25s, down from the original 60s: a game held suspended for a full minute
+/// at launch misses the Riot client/Vanguard startup handshake and wedges the
+/// session (observed 2026-07-12: 60s freeze -> broken client state the user
+/// had to reboot + "repair" to clear). 25s still covers every legitimate
+/// overlay build (single-skin builds run <1s; the worst well-formed
+/// multi-mod builds observed run ~13s) while capping the damage a
+/// pathological build can do.
+const DEFAULT_AUTO_RESUME_SECS: f64 = 25.0;
+/// Consecutive `NtSuspendProcess` failures on the same pid before the
+/// watcher gives up. Repeated failures mean something (anticheat) is
+/// blocking suspension — retrying every 50ms forever just spams the log
+/// (observed 2026-07-12: ~16 failures/s until runoverlay happened to start).
+const SUSPEND_MAX_FAILURES: u32 = 5;
 
 /// Reconstruct a `HANDLE` from the `isize` we store (raw `HANDLE` is a
 /// non-`Send` pointer; the integer form crosses the thread boundary safely).
@@ -104,6 +116,11 @@ struct MonitorState {
     runoverlay_started: bool,
     /// Unconditional safety net: resume no matter what after this long.
     auto_resume: Duration,
+    /// Set when the auto-resume safety net fired: the game was released
+    /// WITHOUT runoverlay having started. The in-flight overlay build is
+    /// now pointless (the game is loading vanilla assets) and must be
+    /// aborted — `overlay::mk_run_overlay` polls this.
+    auto_resumed: bool,
 }
 
 impl MonitorState {
@@ -114,6 +131,7 @@ impl MonitorState {
             suspension_start: None,
             runoverlay_started: false,
             auto_resume: Duration::from_secs_f64(DEFAULT_AUTO_RESUME_SECS),
+            auto_resumed: false,
         }
     }
 
@@ -158,6 +176,7 @@ impl GameMonitor {
             st.runoverlay_started = false;
             st.suspended = None;
             st.suspension_start = None;
+            st.auto_resumed = false;
         }
         let state = Arc::clone(&self.state);
         self.watcher = Some(thread::spawn(move || watcher_loop(state)));
@@ -195,6 +214,15 @@ impl GameMonitor {
         self.state.lock_safe().active
     }
 
+    /// True once the auto-resume safety net has fired for the current
+    /// `start()` cycle: the game was released without runoverlay. Any
+    /// in-flight overlay build should abort — hooking after the game has
+    /// loaded its assets does nothing but burn disk I/O against the loading
+    /// game (`overlay::mk_run_overlay` polls this in its mkoverlay wait loop).
+    pub fn auto_resume_fired(&self) -> bool {
+        self.state.lock_safe().auto_resumed
+    }
+
     /// Stop the watcher, resuming the game first if it's still suspended
     /// (`InjectionManager` calls this after every injection attempt).
     pub fn stop(&mut self) {
@@ -221,6 +249,7 @@ impl GameMonitor {
 fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
     let mut sys = System::new();
     let mut checks_done = 0u32;
+    let mut suspend_failures = 0u32;
 
     loop {
         {
@@ -258,6 +287,18 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
                             unsafe {
                                 let _ = CloseHandle(handle_from(raw));
                             }
+                            suspend_failures += 1;
+                            if suspend_failures >= SUSPEND_MAX_FAILURES {
+                                // Something (anticheat) is refusing the suspend;
+                                // retrying every poll just spams. Injection
+                                // proceeds without the freeze — runoverlay can
+                                // still hook if it starts early enough.
+                                log_error!(
+                                    "[monitor] NtSuspendProcess failed {SUSPEND_MAX_FAILURES}x for pid={pid} - giving up suspension (anticheat blocking?)"
+                                );
+                                st.active = false;
+                                break;
+                            }
                             log_error!("[monitor] NtSuspendProcess failed for pid={pid}");
                         }
                     } else {
@@ -274,6 +315,7 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
                     if let Some(started) = st.suspension_start {
                         if started.elapsed() >= st.auto_resume {
                             log_error!("[monitor] Auto-resume timeout hit - resuming game unconditionally");
+                            st.auto_resumed = true;
                             st.resume_held();
                             st.active = false;
                             break;
