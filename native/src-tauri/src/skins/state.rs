@@ -85,6 +85,15 @@ pub struct SkinsShared {
     pub last_hovered_skin_key: Option<String>,
     pub last_hovered_skin_id: Option<i64>,
     pub last_hovered_skin_slug: Option<String>,
+    /// Favorite skin per champion (`champ_id -> skin_id`), loaded from
+    /// `favorites.json`. Lets you set a go-to skin per champ once and have it
+    /// auto-applied every game — no in-client hovering.
+    pub favorite_skins: std::collections::HashMap<i64, i64>,
+    /// The favorite for the currently-locked champion (set on lock). Consumed
+    /// by `resolve_injection_name` as a fallback BELOW a manual in-client pick.
+    /// Kept separate from `last_hovered_skin_id` so the skin monitor's
+    /// base-skin reports can't clobber it.
+    pub active_favorite_skin_id: Option<i64>,
     /// Skin ID selected in the LCU (owned skin).
     pub selected_skin_id: Option<i64>,
     /// All owned skin IDs from the LCU inventory.
@@ -273,6 +282,9 @@ impl Default for SkinsShared {
 
             party_mode_enabled: false,
             party_token: None,
+
+            favorite_skins: HashMap::new(),
+            active_favorite_skin_id: None,
         }
     }
 }

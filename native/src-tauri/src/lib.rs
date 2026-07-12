@@ -681,6 +681,44 @@ fn skins_set_enabled(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde
     skins_snapshot(&state)
 }
 
+/// The browsable skin catalog (every champ + its skins, flagged downloaded)
+/// for the favorites picker UI.
+#[tauri::command]
+fn skins_catalog() -> serde_json::Value {
+    json!({ "champions": skins::favorites::catalog(None) })
+}
+
+/// The current `champ_id -> favorite skin_id` map, as string-keyed JSON.
+#[tauri::command]
+fn skins_get_favorites(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    let map = state.skins.shared.lock_safe().favorite_skins.clone();
+    let obj: serde_json::Map<String, serde_json::Value> =
+        map.iter().map(|(c, s)| (c.to_string(), json!(s))).collect();
+    serde_json::Value::Object(obj)
+}
+
+/// Set (or clear, when `skin_id` is null) a champion's favorite skin. Persists
+/// to disk and, if that champ is already locked this game, re-arms it live.
+#[tauri::command]
+fn skins_set_favorite(champ_id: i64, skin_id: Option<i64>, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    let map = {
+        let mut shared = state.skins.shared.lock_safe();
+        match skin_id {
+            Some(s) => { shared.favorite_skins.insert(champ_id, s); }
+            None => { shared.favorite_skins.remove(&champ_id); }
+        }
+        // If we're mid-champ-select on this champ, re-arm the active favorite now.
+        if shared.locked_champ_id == Some(champ_id) {
+            shared.active_favorite_skin_id = shared.favorite_skins.get(&champ_id).copied();
+        }
+        shared.favorite_skins.clone()
+    };
+    skins::favorites::save(&map);
+    let obj: serde_json::Map<String, serde_json::Value> =
+        map.iter().map(|(c, s)| (c.to_string(), json!(s))).collect();
+    serde_json::Value::Object(obj)
+}
+
 #[tauri::command]
 fn skins_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     let bridge_port = state.skins_bridge.lock_safe().as_ref().map(|b| b.port());
@@ -975,6 +1013,9 @@ pub fn run() {
             skins_download,
             skins_activate_pengu,
             skins_set_enabled,
+            skins_catalog,
+            skins_get_favorites,
+            skins_set_favorite,
             skins_diagnostics,
             skins_party_enable,
             skins_party_disable,

@@ -403,6 +403,9 @@ fn phase_exit_reset(skins: &Arc<SkinsState>) {
     shared.locks_by_cell.clear();
     shared.all_locked_announced = false;
     shared.loadout_countdown_active = false;
+    // Disarm any favorite from the previous game — the next champ lock re-arms
+    // it from `favorite_skins` for whatever champ is actually picked.
+    shared.active_favorite_skin_id = None;
 }
 
 /// ChampSelect entry: the idempotent per-game reset (guarded by
@@ -649,6 +652,16 @@ async fn process_session(
 
     if let Some(champion_id) = lock_outcome {
         log_info!("[phase] Own champion locked: {champion_id}");
+        // Arm this champ's favorite skin (if set) — injection applies it as a
+        // fallback below any manual in-client pick.
+        {
+            let mut shared = skins.shared.lock_safe();
+            let fav = shared.favorite_skins.get(&champion_id).copied();
+            shared.active_favorite_skin_id = fav;
+            if let Some(fav) = fav {
+                log_info!("[FAVORITES] Champion {champion_id} has favorite skin {fav} — will auto-apply unless you pick another");
+            }
+        }
         if let Some(auth) = lcu::cached_auth() {
             if !scraper_cache.is_loaded_for_champion(champion_id) {
                 if let Some(fresh) = lcu_ext::scrape_champion_skins(client, &auth, champion_id).await {

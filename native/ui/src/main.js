@@ -400,6 +400,14 @@ try { skinsAck = localStorage.getItem(SKINS_ACK_KEY) === "1"; } catch { /* local
 let skinsDownloadActive = false;
 let skinsPollTimer = null;
 
+// Favorite-skin picker state. The catalog (every champ + its skins) is loaded
+// once, lazily, the first time the Skins page opens; the favorites map is the
+// champ_id -> favorite skin_id set the backend persists.
+let skinsCatalog = null;        // [{champ_id, champ_name, skins:[{skin_id,name,downloaded}]}]
+let skinsFavorites = {};        // { "<champ_id>": <skin_id> }
+let favSearch = "";
+let favExpandedChamp = null;    // champ_id whose skins are shown
+
 async function loadSkinsState() {
   skinsState = (await invoke("skins_get_state")) || structuredClone(DEFAULT_SKINS_STATE);
   skinsCfg = {
@@ -507,6 +515,113 @@ function skinsPartyCard() {
   return `<div class="glass set-card" id="skinsPartyCard">${skinsPartyCardInner()}</div>`;
 }
 
+// ── Favorite skins ────────────────────────────────────────────────────────────
+async function loadFavoritesData() {
+  try {
+    const [cat, favs] = await Promise.all([invoke("skins_catalog"), invoke("skins_get_favorites")]);
+    skinsCatalog = (cat && cat.champions) || [];
+    skinsFavorites = favs || {};
+  } catch {
+    skinsCatalog = skinsCatalog || [];
+  }
+}
+
+function favSkinNameFor(champId, skinId) {
+  const c = (skinsCatalog || []).find((x) => x.champ_id === champId);
+  const s = c && c.skins.find((k) => k.skin_id === skinId);
+  return s ? s.name : `Skin ${skinId}`;
+}
+
+function skinsFavoritesCardInner() {
+  const title = `<div class="set-card-title"><span class="ci">${ico("skin")}</span>Favorite Skins</div>
+    <div class="dim" style="font-size:12px;margin:-4px 0 10px">Pick a go-to skin per champion. Chud auto-applies it every game you play them — no in-client hovering. A manual pick in the client still wins for that game.</div>`;
+
+  if (skinsCatalog === null) return `${title}<div class="dim" style="padding:8px 2px">Loading champions…</div>`;
+  if (!skinsCatalog.length)
+    return `${title}<div class="dim" style="padding:8px 2px">No skins downloaded yet. Download skins in Setup above, then favorites will appear here.</div>`;
+
+  const q = favSearch.trim().toLowerCase();
+  const champs = q ? skinsCatalog.filter((c) => c.champ_name.toLowerCase().includes(q)) : skinsCatalog;
+
+  const rows = champs.slice(0, 400).map((c) => {
+    const favId = skinsFavorites[String(c.champ_id)];
+    const badge = favId != null
+      ? `<span class="fav-badge">${esc(favSkinNameFor(c.champ_id, favId))}</span>`
+      : `<span class="dim" style="font-size:11.5px">no favorite</span>`;
+    const expanded = favExpandedChamp === c.champ_id;
+    const caret = expanded ? "▾" : "▸";
+    let sub = "";
+    if (expanded) {
+      const skinRows = c.skins.map((s) => {
+        const isFav = favId === s.skin_id;
+        const cls = `fav-skin${isFav ? " on" : ""}${s.downloaded ? "" : " undl"}`;
+        const note = s.downloaded ? "" : `<span class="dim" style="font-size:10.5px;margin-left:auto">not downloaded</span>`;
+        return `<div class="${cls}" data-fav-champ="${c.champ_id}" data-fav-skin="${s.skin_id}" data-dl="${s.downloaded ? 1 : 0}">
+          <span class="fav-dot">${isFav ? "●" : "○"}</span><span class="fav-sname">${esc(s.name)}</span>${note}</div>`;
+      }).join("");
+      sub = `<div class="fav-skinlist">${skinRows}</div>`;
+    }
+    return `<div class="fav-champ">
+      <div class="fav-champ-head" data-fav-toggle="${c.champ_id}">
+        <span class="fav-caret">${caret}</span>
+        <span class="fav-cname">${esc(c.champ_name)}</span>
+        <span class="fav-cbadge">${badge}</span>
+        ${favId != null ? `<button class="btn sm ghost fav-clear" data-fav-clear="${c.champ_id}">Clear</button>` : ""}
+      </div>${sub}</div>`;
+  }).join("");
+
+  return `${title}
+    <span class="set-input-wrap" style="width:100%;margin-bottom:8px"><input class="set-input" id="favSearch" type="text" style="width:100%;text-align:left" placeholder="Search champion…" value="${esc(favSearch)}"></span>
+    <div class="fav-list">${rows || `<div class="dim" style="padding:8px 2px">No champion matches “${esc(favSearch)}”.</div>`}</div>`;
+}
+function skinsFavoritesCard() {
+  return `<div class="glass set-card" id="skinsFavCard">${skinsFavoritesCardInner()}</div>`;
+}
+function rerenderFavCard() {
+  const card = document.getElementById("skinsFavCard");
+  if (!card) return;
+  card.innerHTML = skinsFavoritesCardInner();
+  wireFavorites();
+}
+function wireFavorites() {
+  const search = document.getElementById("favSearch");
+  if (search) search.oninput = () => {
+    favSearch = search.value;
+    // Re-render list only, preserving the input's focus/caret.
+    const list = document.querySelector("#skinsFavCard .fav-list");
+    if (list) {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = skinsFavoritesCardInner();
+      const fresh = tmp.querySelector(".fav-list");
+      if (fresh) { list.innerHTML = fresh.innerHTML; bindFavListEvents(); }
+    }
+  };
+  bindFavListEvents();
+}
+function bindFavListEvents() {
+  document.querySelectorAll("[data-fav-toggle]").forEach((el) => el.onclick = (e) => {
+    if (e.target.closest("[data-fav-clear]")) return; // Clear button handled below
+    const id = parseInt(el.dataset.favToggle, 10);
+    favExpandedChamp = favExpandedChamp === id ? null : id;
+    rerenderFavCard();
+  });
+  document.querySelectorAll("[data-fav-clear]").forEach((el) => el.onclick = async (e) => {
+    e.stopPropagation();
+    const champ = parseInt(el.dataset.favClear, 10);
+    skinsFavorites = await invoke("skins_set_favorite", { champId: champ, skinId: null });
+    rerenderFavCard();
+    toast("Favorite cleared", "That champion will use whatever you pick in-client.", "neutral");
+  });
+  document.querySelectorAll("[data-fav-skin]").forEach((el) => el.onclick = async () => {
+    if (el.dataset.dl !== "1") { toast("Not downloaded", "That skin isn't downloaded, so it can't be injected. Download skins in Setup.", "warning"); return; }
+    const champ = parseInt(el.dataset.favChamp, 10), skin = parseInt(el.dataset.favSkin, 10);
+    const already = skinsFavorites[String(champ)] === skin;
+    skinsFavorites = await invoke("skins_set_favorite", { champId: champ, skinId: already ? null : skin });
+    rerenderFavCard();
+    toast(already ? "Favorite cleared" : "Favorite set", already ? "Back to in-client picks for this champ." : `${favSkinNameFor(champ, skin)} will auto-apply every game.`, "success");
+  });
+}
+
 async function renderSkins() {
   const p = document.getElementById("page");
   if (!skinsState) {
@@ -525,10 +640,14 @@ async function renderSkins() {
     </div>
     <div class="diag-grid">${skinsStatusCard()}${skinsSetupCard()}</div>
     ${skinsSettingsCard()}
+    ${skinsFavoritesCard()}
     ${skinsPartyCard()}
   </div>`;
   wireSkins();
+  wireFavorites();
   startSkinsPoll();
+  // Lazy-load the favorites catalog once, then refresh just that card.
+  if (skinsCatalog === null) loadFavoritesData().then(() => { if (currentPage === "skins") rerenderFavCard(); });
 }
 
 function wireSkins() {

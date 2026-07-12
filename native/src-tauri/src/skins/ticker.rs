@@ -401,10 +401,31 @@ pub fn resolve_injection_name(shared: &SkinsShared, cache: Option<&ChampionSkinC
         return None;
     }
 
+    // Favorite-skin fallback: apply the champ's saved favorite whenever the
+    // player hasn't manually picked a non-base skin this game (see favorites.rs).
+    let favorite = shared.active_favorite_skin_id;
+
     // Normal hovered skin.
     if let Some(skin_id) = shared.last_hovered_skin_id {
+        // "On base skin" = the client reports the champion's base (num 0) skin,
+        // i.e. no manual pick — that's when the favorite takes over.
+        let champ_base = shared.locked_champ_id.or(shared.hovered_champ_id).map(|c| c * 1000);
+        if Some(skin_id) == champ_base {
+            if let Some(fav) = favorite.filter(|f| *f != skin_id) {
+                let is_base = !is_chroma_id(fav, cache);
+                log_info!("[FAVORITES] On base skin — applying favorite skin {fav} instead");
+                return Some(if is_base { format!("skin_{fav}") } else { format!("chroma_{fav}") });
+            }
+        }
         let is_base = !is_chroma_id(skin_id, cache);
         return Some(if is_base { format!("skin_{skin_id}") } else { format!("chroma_{skin_id}") });
+    }
+
+    // Nothing hovered yet — still honor the favorite if one is armed.
+    if let Some(fav) = favorite {
+        let is_base = !is_chroma_id(fav, cache);
+        log_info!("[FAVORITES] No manual pick — applying favorite skin {fav}");
+        return Some(if is_base { format!("skin_{fav}") } else { format!("chroma_{fav}") });
     }
 
     None

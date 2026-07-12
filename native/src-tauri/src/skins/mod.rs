@@ -8,6 +8,7 @@
 
 pub mod bridge;
 pub mod downloads;
+pub mod favorites;
 pub mod features;
 pub mod injection;
 pub mod lcu_ext;
@@ -41,11 +42,9 @@ pub struct SkinsState {
 
 impl SkinsState {
     pub fn new() -> Self {
-        Self {
-            shared: Mutex::new(state::SkinsShared::default()),
-            phase_gen: AtomicU64::new(0),
-            ticker_gen: AtomicU64::new(0),
-        }
+        let mut shared = state::SkinsShared::default();
+        shared.favorite_skins = favorites::load();
+        Self { shared: Mutex::new(shared), phase_gen: AtomicU64::new(0), ticker_gen: AtomicU64::new(0) }
     }
 }
 

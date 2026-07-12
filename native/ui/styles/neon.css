@@ -510,3 +510,34 @@ body.no-motion *, body.no-motion *::before, body.no-motion *::after { animation:
 }
 .update-pct { font-size: 12px; color: var(--text-muted); min-height: 16px; }
 .update-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; }
+
+/* ── Favorite skins picker ─────────────────────────────────────────────── */
+.fav-list { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+.fav-champ { border-radius: var(--r-sm); overflow: hidden; }
+.fav-champ-head {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer;
+  background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  transition: border-color .15s ease, background .15s ease;
+}
+.fav-champ-head:hover { border-color: var(--line-strong); }
+.fav-caret { width: 12px; color: var(--text-muted); font-size: 11px; }
+.fav-cname { font-weight: 600; color: var(--text-primary); font-size: 13px; }
+.fav-cbadge { margin-left: auto; display: flex; align-items: center; }
+.fav-badge {
+  font-size: 11px; padding: 2px 9px; border-radius: 999px; color: var(--magenta-soft);
+  background: color-mix(in srgb, var(--magenta) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--magenta) 40%, transparent);
+}
+.fav-clear { margin-left: 8px; }
+.fav-skinlist { display: flex; flex-direction: column; gap: 2px; padding: 6px 6px 8px 22px; }
+.fav-skin {
+  display: flex; align-items: center; gap: 9px; padding: 6px 10px; cursor: pointer;
+  border-radius: var(--r-sm); border: 1px solid transparent; font-size: 12.5px; color: var(--text-secondary);
+  transition: background .12s ease, color .12s ease;
+}
+.fav-skin:hover { background: var(--bg-inset); color: var(--text-primary); }
+.fav-skin.on { color: var(--magenta-soft); background: color-mix(in srgb, var(--magenta) 10%, transparent); }
+.fav-skin.undl { opacity: .5; cursor: not-allowed; }
+.fav-skin.undl:hover { background: transparent; color: var(--text-secondary); }
+.fav-dot { width: 12px; color: var(--magenta-soft); font-size: 11px; }
+.fav-sname { flex: 0 1 auto; }
