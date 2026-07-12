@@ -1,14 +1,11 @@
 //! Chud — native League of Legends toolkit (Tauri app).
 //!
-//! M1 wires the real Rust core behind the Hextech dashboard: config + stats +
-//! LCU lockfile auth + an Auto-Accept loop. Auto-Accept is the safe LCU-API
-//! core and is the only functional tool this milestone; Auto-Range (M2) and
-//! Camera Assist (M3) appear as planned/not-yet-ported. The app operates
-//! openly — no anti-cheat evasion.
+//! Chud wires the real Rust core behind the Hextech dashboard: config + stats +
+//! LCU lockfile auth + an Auto-Accept loop, plus Auto-Range and the skins
+//! subsystem. The app operates openly — no anti-cheat evasion.
 
 mod auto_accept;
 mod auto_range;
-mod camera_assist;
 mod config;
 mod input;
 mod lcu;
@@ -18,7 +15,6 @@ mod runes;
 mod safety;
 mod skins;
 mod stats;
-mod vision;
 mod winutil;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -45,13 +41,11 @@ pub struct AppState {
     /// before spawning; the task clears it when it exits.
     pub ws_active: AtomicBool,
     pub auto_range_running: AtomicBool,
-    pub camera_running: AtomicBool,
     pub injection_blocked: AtomicBool, // ranked kill-switch (shared by injection tools)
     pub chat_open: AtomicBool,         // in-game chat open -> release the key
     pub chat_listener_started: AtomicBool,
     pub game_focused: AtomicBool,      // published by tool loops; read by the chat hook (no Win32 in the hook)
     pub auto_range_gen: AtomicU64,     // bumped each arm so a stale duplicate loop exits
-    pub camera_gen: AtomicU64,
     pub auto_accept_gen: AtomicU64,
     pub config_gen: AtomicU64,         // bumped on save so running loops live-reload settings
     /// Skins subsystem shared state (S2+) — see `docs/SKINS_PORT.md`.
@@ -103,13 +97,12 @@ fn admin_cached() -> bool {
 fn snapshot(state: &AppState) -> serde_json::Value {
     let running = state.running.load(Ordering::SeqCst);
     let online = state.client_online.load(Ordering::SeqCst);
-    let (injection_ack, range_key, recenter_mode) = {
+    let (injection_ack, range_key) = {
         let c = state.config.lock_safe();
-        (c.safety.injection_ack, c.autorange.range_hold_key.to_uppercase(), c.camera.recenter_mode.clone())
+        (c.safety.injection_ack, c.autorange.range_hold_key.to_uppercase())
     };
     let admin = admin_cached();
     let range_running = state.auto_range_running.load(Ordering::SeqCst);
-    let camera_running = state.camera_running.load(Ordering::SeqCst);
     let blocked = state.injection_blocked.load(Ordering::SeqCst);
     let phase = state.phase.lock_safe().clone();
     let stats = state.stats.lock_safe();
@@ -131,13 +124,6 @@ fn snapshot(state: &AppState) -> serde_json::Value {
     } else {
         ("READY", "ice")
     };
-    let (cam_status, cam_tone) = if camera_running && blocked {
-        ("RANKED — BLOCKED", "danger")
-    } else if camera_running {
-        ("ARMED", "success")
-    } else {
-        ("READY", "ice")
-    };
 
     json!({
         "clientOnline": online,
@@ -145,7 +131,7 @@ fn snapshot(state: &AppState) -> serde_json::Value {
         "injectionAck": injection_ack,
         "injectionBlocked": blocked,
         "phase": phase,
-        "activeToolCount": (running as i32) + (range_running as i32) + (camera_running as i32),
+        "activeToolCount": (running as i32) + (range_running as i32),
         "summary": {
             "sessionMatches": stats.session_matches_accepted.to_string(),
             "totalMatches": stats.total_matches_accepted.to_string(),
@@ -170,16 +156,6 @@ fn snapshot(state: &AppState) -> serde_json::Value {
                                else if range_running { "Armed: holding range while the game window is focused." }
                                else { "Hold your attack-range indicator during live games." },
                 "primaryActionText": if range_running { "Stop Tool" } else { "Launch Auto-Range" }
-            },
-            {
-                "id": "camera_assist", "title": "Camera Assist", "safe": false, "requiresAdmin": true,
-                "running": camera_running, "statusText": cam_status, "statusTone": cam_tone,
-                "subtitle": "Recenters the camera on your champion when you drift; auto-disabled in ranked.",
-                "metricLabel": "Recenter", "metricValue": recenter_mode,
-                "runtimeCopy": if blocked && camera_running { "Ranked game detected — Camera Assist is disabled to protect your account." }
-                               else if camera_running { "Armed. Note: champion detection is a first pass pending live validation." }
-                               else { "Auto-recenter the camera while playing unlocked." },
-                "primaryActionText": if camera_running { "Stop Tool" } else { "Launch Camera Assist" }
             }
         ]
     })
@@ -257,24 +233,6 @@ fn toggle_auto_range(app: &AppHandle) {
     emit_state(app, &state);
 }
 
-/// Arm/disarm Camera Assist, gated like Auto-Range.
-fn toggle_camera(app: &AppHandle) {
-    let state = app.state::<Arc<AppState>>();
-    let acked = state.config.lock_safe().safety.injection_ack;
-    if !acked || !winutil::is_admin() {
-        emit_state(app, &state);
-        return;
-    }
-    if state.camera_running.load(Ordering::SeqCst) {
-        state.camera_running.store(false, Ordering::SeqCst);
-    } else {
-        let generation = state.camera_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        state.camera_running.store(true, Ordering::SeqCst);
-        camera_assist::start(app.clone(), state.inner().clone(), generation);
-    }
-    emit_state(app, &state);
-}
-
 #[tauri::command]
 fn get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     snapshot(&state)
@@ -300,10 +258,6 @@ fn toggle_tool(id: String, app: AppHandle, state: tauri::State<Arc<AppState>>) {
         }
         "auto_range" => {
             toggle_auto_range(&app);
-            return;
-        }
-        "camera_assist" => {
-            toggle_camera(&app);
             return;
         }
         _ => return,
@@ -384,15 +338,9 @@ fn request_admin(app: AppHandle) {
 /// mid-hold. Called on every exit path.
 fn release_held_keys(state: &AppState) {
     state.auto_range_running.store(false, Ordering::SeqCst);
-    state.camera_running.store(false, Ordering::SeqCst);
-    let keys = {
-        let c = state.config.lock_safe();
-        [c.autorange.range_hold_key.clone(), c.camera.camera_hold_key.clone()]
-    };
-    for key in keys {
-        if let Some(mut injector) = input::Injector::new(&key) {
-            injector.force_release();
-        }
+    let key = { state.config.lock_safe().autorange.range_hold_key.clone() };
+    if let Some(mut injector) = input::Injector::new(&key) {
+        injector.force_release();
     }
 }
 
@@ -431,15 +379,12 @@ fn get_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
         "tools": {
             "autoAccept": state.running.load(Ordering::SeqCst),
             "autoRange": state.auto_range_running.load(Ordering::SeqCst),
-            "cameraAssist": state.camera_running.load(Ordering::SeqCst),
             "injectionBlocked": state.injection_blocked.load(Ordering::SeqCst),
             "injectionAck": cfg.safety.injection_ack,
         },
-        "hotkeys": { "autoRange": "none (always-on while armed)", "cameraAssist": "none (always-on while armed)" },
+        "hotkeys": { "autoRange": "none (always-on while armed)" },
         "config": {
             "rangeHoldKey": cfg.autorange.range_hold_key,
-            "cameraHoldKey": cfg.camera.camera_hold_key,
-            "recenterMode": cfg.camera.recenter_mode,
             "blockInRanked": cfg.safety.block_in_ranked,
             "checkInterval": cfg.auto_accept.check_interval,
         },
@@ -447,45 +392,6 @@ fn get_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
             "config": config::config_path().to_string_lossy(),
             "data": stats::data_dir().to_string_lossy(),
         }
-    })
-}
-
-/// Validation aid (M3): capture the screen, run player detection, save the
-/// frame + detected candidates to the data dir so detection accuracy can be
-/// checked against a live game. Call from the console while in a game:
-///   window.__TAURI__.core.invoke('capture_debug_frame').then(console.log)
-#[tauri::command]
-fn capture_debug_frame() -> serde_json::Value {
-    let Some(frame) = vision::capture_primary() else {
-        return json!({ "ok": false, "error": "capture failed" });
-    };
-    let (w, h) = (frame.width(), frame.height());
-    let candidates = vision::detect_player_candidates(&frame);
-    let dir = stats::data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let png = dir.join("camera_debug.png");
-    let _ = frame.save(&png);
-    let cands: Vec<serde_json::Value> = candidates
-        .iter()
-        .map(|c| {
-            json!({
-                "box": [c.bar_box.0, c.bar_box.1, c.bar_box.2, c.bar_box.3],
-                "anchor": [c.player_anchor.0, c.player_anchor.1],
-                "width": c.width, "height": c.height,
-                "confidence": c.confidence, "manaBonus": c.mana_bonus
-            })
-        })
-        .collect();
-    let _ = std::fs::write(
-        dir.join("camera_debug.json"),
-        serde_json::to_string_pretty(&cands).unwrap_or_default(),
-    );
-    json!({
-        "ok": true,
-        "path": png.to_string_lossy(),
-        "frame": [w, h],
-        "candidateCount": cands.len(),
-        "candidates": cands
     })
 }
 
@@ -1232,13 +1138,11 @@ pub fn run() {
         readycheck_handled: AtomicBool::new(false),
         ws_active: AtomicBool::new(false),
         auto_range_running: AtomicBool::new(false),
-        camera_running: AtomicBool::new(false),
         injection_blocked: AtomicBool::new(false),
         chat_open: AtomicBool::new(false),
         chat_listener_started: AtomicBool::new(false),
         game_focused: AtomicBool::new(false),
         auto_range_gen: AtomicU64::new(0),
-        camera_gen: AtomicU64::new(0),
         auto_accept_gen: AtomicU64::new(0),
         config_gen: AtomicU64::new(0),
         skins: Arc::new(skins::SkinsState::new()),
@@ -1278,7 +1182,6 @@ pub fn run() {
             set_injection_ack,
             request_admin,
             exit_app,
-            capture_debug_frame,
             get_diagnostics,
             get_config,
             save_config,

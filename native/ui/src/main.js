@@ -4,7 +4,7 @@
 // legacy Hextech UI (do not change command/event names — see README):
 //   commands: get_state, toggle_tool, stop_all, set_injection_ack,
 //             request_admin, exit_app, get_config, save_config,
-//             get_diagnostics, get_profile, capture_debug_frame
+//             get_diagnostics, get_profile
 //   events:   state-changed  (payload = full state snapshot)
 //             notification   (optional: {title, message, tone})
 // Skins control panel (S9, see docs/SKINS_PORT.md) — its own command/event
@@ -38,10 +38,6 @@ const MOCK_STATE = {
       subtitle: "Holds the show-range key while a live game is focused; auto-disabled in ranked.",
       statusText: "READY", statusTone: "ice", metricLabel: "Range key", metricValue: "C",
       runtimeCopy: "Hold your attack-range indicator during live games.", primaryActionText: "Launch Auto-Range" },
-    { id: "camera_assist", title: "Camera Assist", safe: false, requiresAdmin: true, running: false,
-      subtitle: "Recenters the camera on your champion when you drift; auto-disabled in ranked.",
-      statusText: "READY", statusTone: "ice", metricLabel: "Recenter", metricValue: "pulse",
-      runtimeCopy: "Auto-recenter the camera while playing unlocked.", primaryActionText: "Launch Camera Assist" },
   ],
 };
 
@@ -54,7 +50,7 @@ const TONE = { success: "#33e0a0", running: "#33e0a0", ice: "#35e4ff", info: "#3
 const toneColor = (t) => TONE[t] || TONE.neutral;
 
 // ── Glyphs (inline SVG so they inherit currentColor) ────────────────────────
-const GLYPH_NAMES = ["dashboard", "profile", "settings", "activity", "diagnostics", "power", "bolt", "crosshair", "camera", "lock", "warning", "ping", "refresh", "copy", "chevron", "shield", "skin", "library"];
+const GLYPH_NAMES = ["dashboard", "profile", "settings", "activity", "diagnostics", "power", "bolt", "crosshair", "lock", "warning", "ping", "refresh", "copy", "chevron", "shield", "skin", "library"];
 const GLYPHS = {};
 async function loadGlyphs() {
   await Promise.all(GLYPH_NAMES.map(async (n) => {
@@ -62,7 +58,7 @@ async function loadGlyphs() {
   }));
 }
 const ico = (n) => GLYPHS[n] || "";
-const glyphForTool = (id) => (id === "auto_accept" ? "bolt" : id === "auto_range" ? "crosshair" : "camera");
+const glyphForTool = (id) => (id === "auto_accept" ? "bolt" : "crosshair");
 
 const NAV = [
   { page: "dashboard", label: "Dashboard", glyph: "dashboard" },
@@ -124,7 +120,7 @@ function riskstrip() {
     <div class="hazard">${ico("warning")}</div>
     <div class="grow">
       <div class="risk-title">Anti-cheat risk — read before enabling injection tools</div>
-      <div class="risk-body">Auto-Range &amp; Camera Assist send synthetic input / read the screen. Vanguard can detect this and <b style="color:#ff92a4">ban the account</b>. They are auto-disabled in ranked games; the app operates openly (no evasion). Use at your own discretion.</div>
+      <div class="risk-body">Auto-Range sends synthetic input. Vanguard can detect this and <b style="color:#ff92a4">ban the account</b>. It is auto-disabled in ranked games; the app operates openly (no evasion). Use at your own discretion.</div>
     </div>
     <button class="btn danger sm" id="ackBtn">I understand — unlock</button>
   </div>`;
@@ -209,7 +205,6 @@ function wireDash() {
 const DEFAULT_CONFIG = {
   auto_accept: { check_interval: 1.0, retry_delay: 5.0, max_retries: 3, max_backoff: 30.0 },
   autorange: { range_hold_key: "c", refresh_interval: 7.5 },
-  camera: { recenter_mode: "pulse", camera_hold_key: "space", center_radius_px: 260, vision_interval: 0.08 },
   safety: { block_in_ranked: true, injection_ack: false },
 };
 let cfg = null;
@@ -237,12 +232,6 @@ function settingsHtml() {
   ${card("Auto-Range", "crosshair", [
     setField("Range key", "League 'show range' key", keyInput("autorange", "range_hold_key")),
     setField("Refresh interval", "Range redraw cadence", numInput("autorange", "refresh_interval", "s")),
-  ].join(""))}
-  ${card("Camera Assist", "camera", [
-    setField("Recenter mode", "Pulse the key or hold", segMode("camera", "recenter_mode", ["pulse", "hold"])),
-    setField("Camera key", "Recenter key", keyInput("camera", "camera_hold_key")),
-    setField("Center radius", "Allowed drift before recentering", numInput("camera", "center_radius_px", "px")),
-    setField("Vision interval", "Screen scan cadence", numInput("camera", "vision_interval", "s")),
   ].join(""))}
   ${card("Safety", "shield", [
     setField("Block in ranked", "Disable injection tools in ranked games", togCtl("safety", "block_in_ranked")),
@@ -371,9 +360,9 @@ const DIAG_FALLBACK = {
   app: { name: "Chud", version: "1.0.0", build: "browser" },
   system: { admin: false, os: "windows", arch: "x86_64" },
   lcu: { clientOnline: false, authFound: false, endpoint: "", phase: "" },
-  tools: { autoAccept: false, autoRange: false, cameraAssist: false, injectionBlocked: false, injectionAck: false },
-  hotkeys: { autoRange: "none (always-on while armed)", cameraAssist: "none (always-on while armed)" },
-  config: { rangeHoldKey: "c", cameraHoldKey: "space", recenterMode: "pulse", blockInRanked: true, checkInterval: 1.0 },
+  tools: { autoAccept: false, autoRange: false, injectionBlocked: false, injectionAck: false },
+  hotkeys: { autoRange: "none (always-on while armed)" },
+  config: { rangeHoldKey: "c", blockInRanked: true, checkInterval: 1.0 },
   paths: { config: "", data: "" },
 };
 const yn = (b) => (b ? "Yes" : "No");
@@ -388,16 +377,14 @@ function diagnosticsHtml(d) {
   ${card("Application", [diagRow("Name", d.app.name), diagRow("Version", d.app.version), diagRow("Build", d.app.build)])}
   ${card("System", [diagRow("Administrator", yn(d.system.admin), d.system.admin ? "success" : "warning"), diagRow("Platform", `${d.system.os} · ${d.system.arch}`)])}
   ${card("League Client (LCU)", [diagRow("Client online", yn(d.lcu.clientOnline), boolTone(d.lcu.clientOnline)), diagRow("Auth (lockfile) found", yn(d.lcu.authFound), boolTone(d.lcu.authFound)), diagRow("Endpoint", d.lcu.endpoint || "—"), diagRow("Gameflow phase", d.lcu.phase || "—")])}
-  ${card("Tools", [diagRow("Auto-Accept", d.tools.autoAccept ? "Running" : "Idle", boolTone(d.tools.autoAccept)), diagRow("Auto-Range", d.tools.autoRange ? "Running" : "Idle", boolTone(d.tools.autoRange)), diagRow("Camera Assist", d.tools.cameraAssist ? "Running" : "Idle", boolTone(d.tools.cameraAssist)), diagRow("Ranked kill-switch", d.tools.injectionBlocked ? "ENGAGED" : "Clear", d.tools.injectionBlocked ? "danger" : "ice"), diagRow("Risk acknowledged", yn(d.tools.injectionAck), d.tools.injectionAck ? "success" : "warning")])}
-  ${card("Configuration", [diagRow("Range hold key", String(d.config.rangeHoldKey).toUpperCase()), diagRow("Camera hold key", String(d.config.cameraHoldKey).toUpperCase()), diagRow("Recenter mode", d.config.recenterMode), diagRow("Block in ranked", yn(d.config.blockInRanked), boolTone(d.config.blockInRanked)), diagRow("Check interval", `${d.config.checkInterval}s`), diagRow("Auto-Range hotkey", d.hotkeys.autoRange), diagRow("Camera hotkey", d.hotkeys.cameraAssist)])}
+  ${card("Tools", [diagRow("Auto-Accept", d.tools.autoAccept ? "Running" : "Idle", boolTone(d.tools.autoAccept)), diagRow("Auto-Range", d.tools.autoRange ? "Running" : "Idle", boolTone(d.tools.autoRange)), diagRow("Ranked kill-switch", d.tools.injectionBlocked ? "ENGAGED" : "Clear", d.tools.injectionBlocked ? "danger" : "ice"), diagRow("Risk acknowledged", yn(d.tools.injectionAck), d.tools.injectionAck ? "success" : "warning")])}
+  ${card("Configuration", [diagRow("Range hold key", String(d.config.rangeHoldKey).toUpperCase()), diagRow("Block in ranked", yn(d.config.blockInRanked), boolTone(d.config.blockInRanked)), diagRow("Check interval", `${d.config.checkInterval}s`), diagRow("Auto-Range hotkey", d.hotkeys.autoRange)])}
   ${card("Paths", [diagRow("Config file", d.paths.config || "—"), diagRow("Data folder", d.paths.data || "—")])}
   </div>
   <div class="diag-actions">
     <button class="btn sm primary" id="diagRefresh"><span style="width:14px;height:14px;display:inline-flex">${ico("refresh")}</span>Refresh</button>
     <button class="btn sm" id="diagCopy"><span style="width:14px;height:14px;display:inline-flex">${ico("copy")}</span>Copy report</button>
-    <button class="btn sm" id="diagCapture"><span style="width:14px;height:14px;display:inline-flex">${ico("camera")}</span>Capture camera debug frame</button>
-  </div>
-  <div id="diagCaptureOut" class="diag-capout dim"></div>`;
+  </div>`;
 }
 async function renderDiagnostics() {
   const p = document.getElementById("page");
@@ -410,14 +397,6 @@ async function renderDiagnostics() {
     try { await navigator.clipboard.writeText(JSON.stringify(d, null, 2)); btn.querySelector("svg") ? btn.lastChild.textContent = "Copied!" : (btn.textContent = "Copied!"); }
     catch { btn.textContent = "Copy failed"; }
     setTimeout(() => { if (currentPage === "diagnostics") renderDiagnostics(); }, 1400);
-  };
-  document.getElementById("diagCapture").onclick = async () => {
-    const out = document.getElementById("diagCaptureOut");
-    out.textContent = "Capturing primary monitor…";
-    const r = await invoke("capture_debug_frame");
-    if (!r) { out.textContent = "Capture unavailable in browser preview."; return; }
-    if (r.ok) out.innerHTML = `Captured ${r.frame?.[0]}×${r.frame?.[1]} · ${r.candidateCount} health-bar candidate(s).<br>Saved to: ${esc(r.path)}`;
-    else out.textContent = `Capture failed: ${esc(r.error || "unknown error")}`;
   };
 }
 

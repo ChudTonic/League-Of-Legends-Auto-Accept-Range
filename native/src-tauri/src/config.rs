@@ -68,34 +68,6 @@ impl Default for Autorange {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Camera {
-    pub camera_hold_key: String,
-    pub recenter_mode: String, // "pulse" | "hold"
-    pub recenter_hold_sec: f64,
-    pub recenter_cooldown_sec: f64,
-    pub lost_recenter_sec: f64,
-    pub center_radius_px: i64,
-    pub vision_interval: f64,
-    pub tick_sec: f64,
-}
-
-impl Default for Camera {
-    fn default() -> Self {
-        Self {
-            camera_hold_key: "space".into(),
-            recenter_mode: "pulse".into(),
-            recenter_hold_sec: 0.24,
-            recenter_cooldown_sec: 0.58,
-            lost_recenter_sec: 0.5,
-            center_radius_px: 260,
-            vision_interval: 0.08,
-            tick_sec: 0.02,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct SkinsCfg {
     /// Empty = autodetect from the running client / registry.
     pub league_path: String,
@@ -274,7 +246,6 @@ impl Default for Library {
 pub struct Config {
     pub auto_accept: AutoAccept,
     pub autorange: Autorange,
-    pub camera: Camera,
     pub lcu: Lcu,
     pub safety: Safety,
     pub skins: SkinsCfg,

@@ -52,9 +52,7 @@ pub(crate) fn start_chat_listener(state: Arc<AppState>) {
                 enter_down.set(false);
             }
             // Only react while an injection tool that cares about chat is armed.
-            let active = state.auto_range_running.load(Ordering::SeqCst)
-                || state.camera_running.load(Ordering::SeqCst);
-            if !active {
+            if !state.auto_range_running.load(Ordering::SeqCst) {
                 return;
             }
             match event.event_type {
@@ -175,8 +173,6 @@ async fn ranked_monitor(state: Arc<AppState>, generation: u64) {
         state.injection_blocked.store(block, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs_f64(interval.max(1.0))).await;
     }
-    // Only clear the shared flag if no other injection tool is still running.
-    if !state.camera_running.load(Ordering::SeqCst) {
-        state.injection_blocked.store(false, Ordering::SeqCst);
-    }
+    // Auto-Range is the only injection tool now — always clear on exit.
+    state.injection_blocked.store(false, Ordering::SeqCst);
 }
