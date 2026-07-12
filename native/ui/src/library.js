@@ -240,18 +240,28 @@
   }
 
   // ── render + events ──
+  // The modal renders into document.body, NOT #page — #page is `.content-inner
+  // .fade-in`, whose animated transform makes it a containing block for
+  // position:fixed, which would clip the modal inside the page column.
+  let modalRoot = null;
+  function ensureModalRoot() {
+    if (!modalRoot || !document.body.contains(modalRoot)) { modalRoot = document.createElement("div"); modalRoot.id = "lbModalRoot"; document.body.appendChild(modalRoot); }
+    return modalRoot;
+  }
   function paint() {
     if (!root) return;
-    root.innerHTML = pageHtml() + (st.selId ? modalHtml((st.catalog || []).find((m) => m.id === st.selId) || {}) : "");
+    root.innerHTML = pageHtml();
+    ensureModalRoot().innerHTML = st.selId ? modalHtml((st.catalog || []).find((m) => m.id === st.selId) || {}) : "";
     wire();
     const s = document.getElementById("lbSearch");
-    if (s && st.tab === "browse") { s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+    if (s && st.tab === "browse" && !st.selId) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
   }
   // patch just the browse main column (cheap re-render for filter/sort changes)
   function paintSoft() { paint(); }
 
   function wire() {
-    const on = (sel, ev, fn) => root.querySelectorAll(sel).forEach((el) => (el[ev] = fn));
+    const scopes = [root, modalRoot].filter(Boolean);
+    const on = (sel, ev, fn) => scopes.forEach((sc) => sc.querySelectorAll(sel).forEach((el) => (el[ev] = fn)));
     on("[data-tab]", "onclick", (e) => { st.tab = e.currentTarget.dataset.tab; st.selId = null; paint(); });
     on("[data-sort]", "onclick", (e) => { st.sort = e.currentTarget.dataset.sort; paint(); });
     on("[data-champ]", "onclick", (e) => { const c = e.currentTarget.dataset.champ; st.champ = st.champ === c ? "" : c; paint(); });
