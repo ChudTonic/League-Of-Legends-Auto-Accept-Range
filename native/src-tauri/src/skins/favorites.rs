@@ -70,11 +70,18 @@ pub fn catalog(lang: Option<&str>) -> Vec<ChampSkins> {
     let Some(text) = text else { return Vec::new() };
     let Ok(map) = serde_json::from_str::<HashMap<String, Value>>(&text) else { return Vec::new() };
 
-    // Group skin_id -> name by champion (champ_id = skin_id / 1000).
+    // Group skin_id -> name by champion (champ_id = skin_id / 1000). Chromas are
+    // excluded: they clutter the picker (a champ can have 90+ chroma entries vs
+    // ~15 real skins) and you can't meaningfully "favorite" a chroma here. They
+    // are reliably identifiable by name — a parenthesized colour suffix like
+    // "Cosmic Queen Ashe (Obsidian)" or a trailing " Chroma".
     let mut by_champ: HashMap<i64, Vec<(i64, String)>> = HashMap::new();
     for (id_str, name_val) in &map {
         let Ok(skin_id) = id_str.parse::<i64>() else { continue };
         let Some(name) = name_val.as_str() else { continue };
+        if name.contains('(') || name.trim_end().ends_with("Chroma") {
+            continue;
+        }
         by_champ.entry(skin_id / 1000).or_default().push((skin_id, name.to_string()));
     }
 
