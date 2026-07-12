@@ -47,7 +47,7 @@
   let settingsPanel = null;
   let currentSettings = {
     threshold: 0.5,
-    monitorAutoResumeTimeout: 60,
+    monitorAutoResumeTimeout: 25,
     autostart: false,
     gamePath: "",
     gamePathValid: false,
@@ -1106,7 +1106,7 @@
   function handleSettingsData(payload) {
     currentSettings = {
       threshold: payload.threshold || 0.5,
-      monitorAutoResumeTimeout: payload.monitorAutoResumeTimeout || 60,
+      monitorAutoResumeTimeout: payload.monitorAutoResumeTimeout || 25,
       autostart: payload.autostart || false,
       gamePath: payload.gamePath || "",
       gamePathValid: payload.gamePathValid || false,

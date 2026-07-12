@@ -66,6 +66,14 @@ pub struct InjectionManager {
 
 impl InjectionManager {
     pub fn new(tools_dir: PathBuf, mods_dir: PathBuf, zips_dir: PathBuf, overlay_dir: PathBuf) -> Self {
+        // Startup carcass sweep: a build aborted by a crash/kill can leave a
+        // partially-written overlay (observed at 17 GB) and stale mod
+        // junctions behind with no later injection to clean them. Both dirs
+        // are rebuilt from scratch on every injection, so clearing them here
+        // is always safe (locked files from a still-running previous-session
+        // runoverlay just fail the remove non-fatally).
+        storage::clean_mods_dir(&mods_dir);
+        storage::clean_overlay_dir(&overlay_dir);
         Self {
             tools_dir,
             mods_dir,

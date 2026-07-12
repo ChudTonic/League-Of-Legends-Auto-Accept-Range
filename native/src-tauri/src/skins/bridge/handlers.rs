@@ -1068,7 +1068,7 @@ struct BridgeLocalSettings {
 
 impl Default for BridgeLocalSettings {
     fn default() -> Self {
-        Self { monitor_auto_resume_timeout: 60, autostart_requested: false }
+        Self { monitor_auto_resume_timeout: 25, autostart_requested: false }
     }
 }
 
@@ -1146,7 +1146,7 @@ fn handle_settings_save(
     game_path: Option<String>,
 ) {
     let threshold_s = threshold.unwrap_or(0.5).clamp(0.0, 2.0);
-    let monitor_s = monitor_auto_resume_timeout.unwrap_or(60).clamp(1, 180);
+    let monitor_s = monitor_auto_resume_timeout.unwrap_or(25).clamp(1, 180);
     let autostart = autostart.unwrap_or(false);
     let game_path = game_path.unwrap_or_default();
     let trimmed_path = game_path.trim();
@@ -1164,9 +1164,13 @@ fn handle_settings_save(
         let mut cfg = app_state.config.lock_safe();
         cfg.skins.injection_threshold_ms = (threshold_s * 1000.0).round() as u64;
         cfg.skins.league_path = trimmed_path.to_string();
+        cfg.skins.monitor_auto_resume_timeout_secs = monitor_s as f64;
         let _ = cfg.save();
     }
     ctx.injection.refresh_injection_threshold(threshold_s);
+    // Apply the auto-resume timeout live — it was previously only persisted
+    // to the bridge-local file and never reached the running GameMonitor.
+    ctx.injection.set_auto_resume_timeout(monitor_s as f64);
 
     let mut local = load_bridge_local_settings();
     local.monitor_auto_resume_timeout = monitor_s;
@@ -1540,9 +1544,11 @@ mod tests {
     }
 
     #[test]
-    fn bridge_local_settings_default_matches_python_defaults() {
+    fn bridge_local_settings_default_uses_safe_auto_resume_timeout() {
         let s = BridgeLocalSettings::default();
-        assert_eq!(s.monitor_auto_resume_timeout, 60);
+        // 25s, not the Python original's 60s — a game frozen ~60s at launch
+        // wedges the Riot session (see config::SkinsCfg field docs).
+        assert_eq!(s.monitor_auto_resume_timeout, 25);
         assert!(!s.autostart_requested);
     }
 }
