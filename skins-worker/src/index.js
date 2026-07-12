@@ -103,9 +103,69 @@ async function crawlFull(env) {
   return all.length;
 }
 
+// In-memory cache of the parsed catalog (per isolate) so we don't re-read +
+// re-parse the ~1.6MB KV blob on every request.
+let _catCache = null;
 async function getCatalog(env) {
+  const now = Date.now();
+  if (_catCache && now - _catCache.ts < 60000) return _catCache.data;
   const raw = await env.CATALOG.get("catalog:v1");
-  return raw ? JSON.parse(raw) : [];
+  const data = raw ? JSON.parse(raw) : [];
+  _catCache = { data, ts: now };
+  return data;
+}
+
+// Set of mod IDs whose file is in R2 ("ready" — installs instantly from us).
+let _mirCache = null;
+async function getMirrored(env) {
+  const now = Date.now();
+  if (_mirCache && now - _mirCache.ts < 20000) return _mirCache.set;
+  const raw = await env.CATALOG.get("mirrored:v1");
+  const set = new Set(raw ? JSON.parse(raw) : []);
+  _mirCache = { set, ts: now };
+  return set;
+}
+async function addMirrored(env, id) {
+  const raw = await env.CATALOG.get("mirrored:v1");
+  const arr = raw ? JSON.parse(raw) : [];
+  if (!arr.includes(id)) {
+    arr.push(id);
+    await env.CATALOG.put("mirrored:v1", JSON.stringify(arr));
+  }
+  _mirCache = null;
+}
+
+// Mirror one file into R2 (resolve -> fetch -> put -> mark ready). Returns bytes
+// or null. Used by the cron trickle and the on-demand /file path.
+async function mirrorFile(env, modId) {
+  if (!env.FILES) return null;
+  const already = await env.FILES.head(`f/${modId}.fantome`);
+  if (already) { await addMirrored(env, modId); return already.size; } // in R2 already → just mark ready
+  const asset = await resolveDownload(env, modId);
+  if (!asset) return null;
+  let fr;
+  try { fr = await fetch(asset, { headers: { "User-Agent": UA } }); } catch (e) { return null; }
+  if (!fr.ok) return null;
+  const buf = await fr.arrayBuffer();
+  await env.FILES.put(`f/${modId}.fantome`, buf, { httpMetadata: { contentType: "application/zip" } });
+  await addMirrored(env, modId);
+  return buf.byteLength;
+}
+
+// Gentle trickle: mirror up to N not-yet-mirrored files. Runs from the cron once
+// the day's catalog crawl is done, so R2 fills in over time.
+async function trickleMirror(env, n) {
+  if (!env.FILES) return { mirrored: 0 };
+  const all = await getCatalog(env);
+  const done = await getMirrored(env);
+  let count = 0;
+  for (const m of all) {
+    if (count >= n) break;
+    if (done.has(m.id)) continue;
+    const bytes = await mirrorFile(env, m.id);
+    if (bytes != null) count++;
+  }
+  return { mirrored: count, total: all.length, ready: done.size + count };
 }
 
 async function resolveDownload(env, modId) {
@@ -152,7 +212,12 @@ async function serveImage(req, env, ctx, key) {
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(crawlSpurt(env));
+    ctx.waitUntil((async () => {
+      const s = await crawlSpurt(env);
+      // Once the day's catalog is assembled, spend the cron budget trickling a
+      // couple of files into R2 so it fills in gradually.
+      if (s.idle || s.assembled != null) await trickleMirror(env, 2);
+    })());
   },
 
   async fetch(req, env, ctx) {
@@ -198,21 +263,25 @@ export default {
 
     if (path === "/catalog") {
       const all = await getCatalog(env);
+      const ready = await getMirrored(env);
       const q = (url.searchParams.get("search") || "").toLowerCase().trim();
       const champ = url.searchParams.get("champion");
       const cat = url.searchParams.get("category");
+      const readyOnly = url.searchParams.get("ready") === "1";
       const page = Math.max(0, parseInt(url.searchParams.get("page") || "0", 10) || 0);
       const size = Math.min(60, Math.max(1, parseInt(url.searchParams.get("pageSize") || "48", 10) || 48));
       let items = all;
       if (q) items = items.filter((m) => m.name.toLowerCase().includes(q) || m.champions.some((c) => (c.name || "").toLowerCase().includes(q)) || (m.publisher || "").toLowerCase().includes(q));
       if (champ) items = items.filter((m) => m.champions.some((c) => String(c.id) === champ || (c.name || "").toLowerCase() === champ.toLowerCase()));
       if (cat) items = items.filter((m) => m.category === cat);
+      if (readyOnly) items = items.filter((m) => ready.has(m.id));
       const total = items.length;
       const mods = items.slice(page * size, page * size + size).map((m) => ({
         ...m,
         thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null,
+        ready: ready.has(m.id), // file already in R2 → installs instantly from us
       }));
-      return json({ total, page, pageSize: size, mods });
+      return json({ total, page, pageSize: size, readyCount: ready.size, mods });
     }
 
     if (path.startsWith("/img/")) {
@@ -222,8 +291,7 @@ export default {
     }
 
     if (path.startsWith("/download/")) {
-      // Always hand the client OUR file URL — they download from us (R2), never
-      // Return our /file URL; /file serves from R2 (mirror-on-first-request).
+      // Return our /file URL; the client downloads from us (R2).
       const modId = decodeURIComponent(path.slice("/download/".length));
       if (!modId) return json({ error: "no mod id" }, 400);
       let mirrored = false;
@@ -242,16 +310,24 @@ export default {
         const obj = await env.FILES.get(fkey);
         if (obj) return cors(new Response(obj.body, { headers: attach }));
       }
-      // Not in R2 yet — fetch, serve, and persist.
-      // client AND persist to R2 so every future download comes from us.
+      // Not in R2 yet — fetch, serve, and persist (+ mark ready).
       const asset = await resolveDownload(env, modId);
       if (!asset) return cors(new Response("not found", { status: 404 }));
       let fr;
       try { fr = await fetch(asset, { headers: { "User-Agent": UA } }); } catch (e) { return cors(new Response("source unavailable", { status: 502 })); }
       if (!fr.ok) return cors(new Response("source unavailable", { status: 502 }));
       const buf = await fr.arrayBuffer();
-      if (env.FILES) ctx.waitUntil(env.FILES.put(fkey, buf.slice(0), { httpMetadata: { contentType: "application/zip" } }));
+      if (env.FILES) ctx.waitUntil((async () => {
+        await env.FILES.put(fkey, buf.slice(0), { httpMetadata: { contentType: "application/zip" } });
+        await addMirrored(env, modId);
+      })());
       return cors(new Response(buf, { headers: attach }));
+    }
+
+    if (path === "/trickle") {
+      if (!env.CRAWL_KEY || url.searchParams.get("key") !== env.CRAWL_KEY) return json({ error: "forbidden" }, 403);
+      const n = Math.min(20, Math.max(1, parseInt(url.searchParams.get("n") || "3", 10) || 3));
+      return json(await trickleMirror(env, n));
     }
 
     if (path === "/meta") {
@@ -259,7 +335,8 @@ export default {
       let progress = null;
       try { progress = JSON.parse((await env.CATALOG.get("crawl:state")) || "null"); } catch (e) {}
       const base = meta ? JSON.parse(meta) : { count: 0 };
-      return json({ ...base, crawlProgress: progress });
+      const ready = await getMirrored(env);
+      return json({ ...base, ready: ready.size, crawlProgress: progress });
     }
 
     return json({ service: "chud-skins catalog", endpoints: ["/catalog", "/img/{key}", "/download/{modId}", "/meta"] });
