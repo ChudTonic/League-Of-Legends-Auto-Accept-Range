@@ -78,7 +78,9 @@
 
   // ── card ──
   function thumbStyle(m) {
-    if (m.thumb) return `background:url("${esc(m.thumb)}") center/cover no-repeat`;
+    // Single-quotes inside url() — the style="" attribute is double-quoted, so
+    // url("…") would terminate the attribute and drop the background entirely.
+    if (m.thumb) return `background:url('${esc(m.thumb)}') center/cover no-repeat`;
     const h = hue(m.id);
     return `background:linear-gradient(135deg,hsl(${h} 42% 14%),hsl(${(h + 45) % 360} 52% 25%))`;
   }
