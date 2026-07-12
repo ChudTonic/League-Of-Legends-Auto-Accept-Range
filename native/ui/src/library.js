@@ -31,6 +31,7 @@
       id: m.id, name: m.name || "Untitled", author: m.author || "unknown",
       champId: champ ? champ.id : null, champ: champ ? champ.name : null,
       category: CAT_DISPLAY[m.category] || cap(m.category) || "Other",
+      rawCategory: m.category || "",
       themes: (m.themes || []).map((t) => THEME_DISPLAY[t] || cap(t)),
       views: m.views || 0, installs: m.installs || 0, likes: m.likes || 0,
       updatedHrs: hoursSince(m.updatedAt), trending: !!m.trending, working: m.working !== false,
@@ -237,7 +238,6 @@
           <div class="lb-mby">by <b>${esc(m.author)}</b>${m.updatedHrs != null ? " · updated " + esc(fmtAgo(m.updatedHrs)) : ""}</div>
           <div class="lb-mchips"><span class="chip ${m.working ? "lb-chip-ok" : "lb-chip-warn"}"><span class="lb-dot on"></span>${m.working ? "WORKING" : "BROKEN ON PATCH"}</span><span class="chip lb-chip-n">${esc(m.category)}</span></div>
           <div class="lb-mstats"><span>${fmtN(m.views)} views</span><span>↓ ${fmtN(m.installs)}</span><span>♥ ${fmtN(m.likes)}</span></div>
-          <div class="lb-mdesc">${esc(m.description || "No description provided.")}</div>
           <div class="lb-maction">${action}<div class="lb-mfoot">Installs straight to Chud. In champ select, click the <b>Custom Mods</b> button and pick it when this champion is up.</div></div>
         </div>
       </div>
@@ -293,7 +293,7 @@
     st.installing[id] = 5; paint();
     const iv = setInterval(() => { const c = st.installing[id]; if (c == null) return clearInterval(iv); st.installing[id] = Math.min(94, c + 3 + Math.random() * 6); paint(); }, 180);
     try {
-      const rec = await inv("library_install", { modId: id, name: m.name || id, champ: m.champ || "", champId: m.champId || null });
+      const rec = await inv("library_install", { modId: id, name: m.name || id, champ: m.champ || "", champId: m.champId || null, category: m.rawCategory || "" });
       clearInterval(iv); delete st.installing[id];
       st.installed[id] = rec || { name: m.name, version: "1.0.0" };
       toast("Mod installed", `${m.name || "Mod"} — pick it from the Custom Mods button in champ select.`, "success");

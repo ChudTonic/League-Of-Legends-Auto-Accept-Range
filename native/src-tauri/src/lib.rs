@@ -911,56 +911,97 @@ fn library_set_auto_update(on: bool, state: tauri::State<Arc<AppState>>) -> bool
     on
 }
 
+/// Map a catalog category to its custom-mod store subdirectory (relative to
+/// `mods/`). Champion skins nest under `skins/{champ*1000}`; every other
+/// category is a flat root folder the in-client wheel reads via
+/// `list_mods_for_category`. Returns `None` for champion skins (handled
+/// separately since they need the resolved champion id).
+fn library_category_dir(category: &str) -> Option<&'static str> {
+    match category {
+        "map_skin" => Some("maps"),
+        "announcer" => Some("announcers"),
+        "font" => Some("fonts"),
+        "ui" => Some("ui"),
+        "vfx" => Some("vfx"),
+        "sfx" => Some("sfx"),
+        "voiceover" => Some("voiceover"),
+        "loading_screen" => Some("loading_screen"),
+        "miscellaneous" | "other" | "others" => Some("others"),
+        _ => None, // champion_skin (and unknown) -> skins/{champ*1000}
+    }
+}
+
 /// Install a mod: resolve its download from the Worker (served from our R2),
-/// then drop the `.fantome` into the custom-mod store at
-/// `mods/skins/{champ_id*1000}/` so it shows up on the in-client "Custom Mods"
-/// button when that champion is up in champ select — no separate "apply" step.
-/// The install record (in config) persists across updates; `rec.file` is the
-/// path relative to `mods/skins` so removal can find it again.
+/// then drop the `.fantome` into the custom-mod store so the in-client "Custom
+/// Mods" button surfaces it — champion skins under `mods/skins/{champ*1000}`
+/// (matched by champion in champ select), maps/announcers/fonts/etc. under
+/// their own `mods/{category}` folder (matched by the wheel's category tabs).
+/// No separate "apply" step. The install record (config) persists across
+/// updates; `rec.file` is the path relative to `mods/` so removal can find it.
 #[tauri::command]
 async fn library_install(
     mod_id: String,
     name: String,
     champ: String,
     champ_id: Option<i64>,
+    category: Option<String>,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<serde_json::Value, String> {
-    // A champion is required — that's how the mod is matched in champ select.
-    let cid = champ_id
-        .filter(|&id| id > 0)
-        .or_else(|| resolve_champ_id_by_name(&champ))
-        .ok_or_else(|| format!("Couldn't match \"{champ}\" to a champion, so this skin can't be placed. Try again or report it."))?;
+    use skins::slog::{log_info, log_warn};
+    let category = category.unwrap_or_default();
+    log_info!("[LIBRARY] install requested: '{name}' (id={mod_id}, category='{category}', champ='{champ}', champId={champ_id:?})");
+
+    // Resolve the destination folder (relative to mods/) by category.
+    let rel_dir: std::path::PathBuf = match library_category_dir(&category) {
+        Some(cat_dir) => std::path::PathBuf::from(cat_dir),
+        None => {
+            // Champion skin: needs the numeric champ id for the skins/{champ*1000} slot.
+            let cid = champ_id.filter(|&id| id > 0).or_else(|| resolve_champ_id_by_name(&champ)).ok_or_else(|| {
+                log_warn!("[LIBRARY] install FAILED: no champion resolved for skin mod '{name}' (champ='{champ}')");
+                format!("Couldn't match \"{champ}\" to a champion, so this skin can't be placed. Try again or report it.")
+            })?;
+            std::path::PathBuf::from("skins").join((cid * 1000).to_string())
+        }
+    };
 
     let endpoint = { state.config.lock_safe().library.endpoint.clone() };
     let base = endpoint.trim_end_matches('/');
     let http = lcu::build_client(180.0);
+    log_info!("[LIBRARY] resolving download URL for {mod_id}");
     let dl = http
         .get(format!("{base}/download/{mod_id}"))
         .send()
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| { log_warn!("[LIBRARY] download-resolve request failed: {e}"); e.to_string() })?
         .json::<serde_json::Value>()
         .await
         .map_err(|e| e.to_string())?;
-    let url = dl.get("url").and_then(|v| v.as_str()).ok_or("could not resolve download")?.to_string();
+    let url = dl.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+        log_warn!("[LIBRARY] no download URL for {mod_id} (not mirrored yet?)");
+        "could not resolve download".to_string()
+    })?.to_string();
+    log_info!("[LIBRARY] downloading {mod_id} from {url}");
     let bytes = http.get(&url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
+    let size_mb = (bytes.len() as f64) / 1_048_576.0;
+    if bytes.len() < 1024 {
+        log_warn!("[LIBRARY] downloaded only {} bytes for '{name}' — likely not a real mod file", bytes.len());
+    }
+    log_info!("[LIBRARY] downloaded {size_mb:.2} MB for '{name}'");
 
-    // Base skin id for the champ; `list_mods_for_champion` scans every skin dir
-    // whose `champion_of(skin_id)` matches, so the base slot surfaces it for
-    // any of that champion's skins.
-    let skin_id = cid * 1000;
-    let dir = skins::paths::mods_dir().join("skins").join(skin_id.to_string());
+    let dir = skins::paths::mods_dir().join(&rel_dir);
     tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
     let stem = sanitize_mod_filename(&name, &mod_id);
-    let file = format!("{stem}.fantome");
-    tokio::fs::write(dir.join(&file), &bytes).await.map_err(|e| e.to_string())?;
+    let file_name = format!("{stem}.fantome");
+    tokio::fs::write(dir.join(&file_name), &bytes).await.map_err(|e| e.to_string())?;
+    let rel_file = rel_dir.join(&file_name).to_string_lossy().replace('\\', "/");
+    log_info!("[LIBRARY] installed '{name}' -> mods/{rel_file}");
 
     let rec = config::InstalledMod {
         name,
         champ,
         version: "1.0.0".into(),
-        size_mb: (bytes.len() as f64) / 1_048_576.0,
-        file: format!("{skin_id}/{file}"),
+        size_mb,
+        file: rel_file,
     };
     {
         let mut c = state.config.lock_safe();
@@ -973,12 +1014,16 @@ async fn library_install(
 /// Remove an installed mod (delete the file + forget the record).
 #[tauri::command]
 fn library_remove(mod_id: String, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    use skins::slog::log_info;
     let mut c = state.config.lock_safe();
     if let Some(rec) = c.library.installed.remove(&mod_id) {
-        // New installs store "{skin_id}/{file}" under mods/skins; legacy ones
-        // stored a bare filename under the old library dir. Try both.
+        // `rec.file` is now relative to `mods/` (e.g. "skins/202000/X.fantome"
+        // or "maps/X.fantome"). Older builds stored it relative to `mods/skins`
+        // or under the legacy `library/` dir — try all three.
+        let _ = std::fs::remove_file(skins::paths::mods_dir().join(&rec.file));
         let _ = std::fs::remove_file(skins::paths::mods_dir().join("skins").join(&rec.file));
         let _ = std::fs::remove_file(library_mods_dir().join(&rec.file));
+        log_info!("[LIBRARY] removed '{}' (was mods/{})", rec.name, rec.file);
     }
     let _ = c.save();
     json!({ "installed": c.library.installed })
