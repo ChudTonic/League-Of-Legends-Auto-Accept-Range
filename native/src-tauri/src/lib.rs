@@ -749,12 +749,12 @@ fn spawn_runes_auto_import(state: Arc<AppState>) {
                 continue;
             };
             match runes::locked_champ_and_role(&http, &auth).await {
-                Some((champ, role)) if last_champ != Some(champ) => {
-                    if let Some(build) = runes::fetch_build(&http, &endpoint, champ, &role, &sort).await {
+                Some((champ, role, mode)) if last_champ != Some(champ) => {
+                    if let Some(build) = runes::fetch_build(&http, &endpoint, champ, &role, &mode, &sort).await {
                         let applied = runes::apply_build(&http, &auth, &build).await;
                         if applied.runes {
                             last_champ = Some(champ);
-                            eprintln!("[runes] auto-imported build for champion {champ} ({role})");
+                            eprintln!("[runes] auto-imported build for champion {champ} ({role}/{mode})");
                         }
                     }
                 }

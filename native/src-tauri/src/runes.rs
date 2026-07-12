@@ -81,6 +81,7 @@ pub async fn fetch_build(
     runes_endpoint: &str,
     champion_id: i64,
     role: &str,
+    mode: &str,
     sort: &str,
 ) -> Option<RuneBuild> {
     if runes_endpoint.trim().is_empty() {
@@ -89,9 +90,10 @@ pub async fn fetch_build(
     // Patch is intentionally NOT sent — the Worker resolves the current patch
     // itself (from Data Dragon) so the client can't send a stale one.
     let url = format!(
-        "{}?champ={champion_id}&role={}&sort={}",
+        "{}?champ={champion_id}&role={}&mode={}&sort={}",
         runes_endpoint.trim_end_matches('/'),
         urlencode(role),
+        urlencode(mode),
         urlencode(sort),
     );
     let resp = http.get(&url).send().await.ok()?;
@@ -205,17 +207,20 @@ async fn apply_items(http: &reqwest::Client, auth: &Auth, name: &str, blocks: &I
         .is_some()
 }
 
-/// Read the champion you've locked/hovered + your assigned role from the live
-/// champ-select session. Returns `None` when not in champ select or no champ is
-/// picked yet.
-pub async fn locked_champ_and_role(http: &reqwest::Client, auth: &Auth) -> Option<(i64, String)> {
+/// Read the champion you've locked/hovered, your assigned role, and the game
+/// mode ("aram" | "") from the live champ-select session. ARAM has its own rune
+/// meta (detected via `benchEnabled`, which only ARAM sets), so we tell the
+/// Worker to pull ARAM data. Returns `None` when not in champ select or no
+/// champ is picked yet.
+pub async fn locked_champ_and_role(http: &reqwest::Client, auth: &Auth) -> Option<(i64, String, String)> {
     let session = lcu::get_json(http, auth, "/lol-champ-select/v1/session").await?;
     let my_cell = session.get("localPlayerCellId").and_then(Value::as_i64)?;
     let team = session.get("myTeam").and_then(Value::as_array)?;
     let me = team.iter().find(|m| m.get("cellId").and_then(Value::as_i64) == Some(my_cell))?;
     let champ = me.get("championId").and_then(Value::as_i64).filter(|c| *c > 0)?;
     let role = normalize_role(me.get("assignedPosition").and_then(Value::as_str).unwrap_or(""));
-    Some((champ, role))
+    let mode = if session.get("benchEnabled").and_then(Value::as_bool).unwrap_or(false) { "aram" } else { "" };
+    Some((champ, role, mode.to_string()))
 }
 
 /// Map LCU `assignedPosition` values to the roles the Worker expects. Empty =
@@ -238,8 +243,8 @@ fn normalize_role(pos: &str) -> String {
 /// not in champ select, no champ picked, or the Worker had no build).
 pub async fn import_now(http: &reqwest::Client, auth: &Auth, endpoint: &str, sort: &str) -> Applied {
     let none = Applied { runes: false, spells: false, items: false };
-    let Some((champ, role)) = locked_champ_and_role(http, auth).await else { return none };
-    let Some(build) = fetch_build(http, endpoint, champ, &role, sort).await else { return none };
+    let Some((champ, role, mode)) = locked_champ_and_role(http, auth).await else { return none };
+    let Some(build) = fetch_build(http, endpoint, champ, &role, &mode, sort).await else { return none };
     apply_build(http, auth, &build).await
 }
 

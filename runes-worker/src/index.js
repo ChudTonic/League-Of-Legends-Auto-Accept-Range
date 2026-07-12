@@ -15,9 +15,10 @@ const UA =
 
 // Chud role -> u.gg position enum (1=jungle 2=support 3=adc 4=top 5=mid 6=none).
 const ROLE_POS = { top: 4, jungle: 1, mid: 5, bot: 3, support: 2 };
-// u.gg aggregate slices: server 12 = World/all-regions, tier 10 = Platinum+.
+// u.gg aggregate slices: server 12 = World/all-regions. Tier differs by mode
+// (ranked exposes 10 = Platinum+, ARAM exposes 8), so we pick robustly below.
 const SERVER = "12";
-const TIER = "10";
+const TIER_PREF = ["10", "8"];
 
 export default {
   async fetch(request) {
@@ -29,13 +30,16 @@ export default {
     }
     const champ = parseInt(url.searchParams.get("champ") || "0", 10);
     const role = (url.searchParams.get("role") || "").toLowerCase();
+    // ARAM has its own rune meta (different tier key + ARAM spells/items), so
+    // the client passes mode=aram and we hit u.gg's ARAM data instead.
+    const gameMode = (url.searchParams.get("mode") || "").toLowerCase() === "aram" ? "normal_aram" : "ranked_solo_5x5";
     if (!champ) return json({ error: "missing champ" }, 400, cors);
 
     try {
       const patch = await currentPatch();
-      let overview = await fetchOverview(champ, patch);
+      let overview = await fetchOverview(champ, patch, gameMode);
       // Trackers can lag a day post-patch; fall back one minor version.
-      if (!overview) overview = await fetchOverview(champ, prevPatch(patch));
+      if (!overview) overview = await fetchOverview(champ, prevPatch(patch), gameMode);
       if (!overview) return json({ error: "upstream unavailable" }, 502, cors);
 
       const build = normalize(overview, role);
@@ -58,8 +62,8 @@ function prevPatch(p) {
   return min > 1 ? `${maj}_${min - 1}` : `${maj - 1}_24`;
 }
 
-async function fetchOverview(champ, patch) {
-  const u = `https://stats2.u.gg/lol/1.5/overview/${patch}/ranked_solo_5x5/${champ}/1.5.0.json`;
+async function fetchOverview(champ, patch, gameMode) {
+  const u = `https://stats2.u.gg/lol/1.5/overview/${patch}/${gameMode}/${champ}/1.5.0.json`;
   const r = await fetch(u, { headers: { "user-agent": UA }, cf: { cacheTtl: 21600, cacheEverything: true } });
   if (!r.ok) return null; // 403 = blocked OR missing patch/champ file; either way, no data
   return r.json();
@@ -72,7 +76,13 @@ async function fetchOverview(champ, patch) {
 //   positionDataArray[2] start:  [games, wins, [itemIds]]
 //   positionDataArray[8] shards: [games, wins, ["s1","s2","s3"]]
 function normalize(overview, role) {
-  const tier = overview?.[SERVER]?.[TIER];
+  const server = overview?.[SERVER] || overview?.[Object.keys(overview || {})[0]];
+  if (!server) return null;
+  // Pick the tier: ranked exposes 10 (Plat+), ARAM exposes 8; else take
+  // whatever's present rather than 404 the request.
+  let tier = null;
+  for (const t of TIER_PREF) if (server[t]) { tier = server[t]; break; }
+  if (!tier) tier = server[Object.keys(server)[0]];
   if (!tier) return null;
 
   let data = null;
