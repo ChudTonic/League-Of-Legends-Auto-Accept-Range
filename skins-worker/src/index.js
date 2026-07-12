@@ -30,10 +30,13 @@ function normalize(m) {
     category: m.category || null,
     themes: (m.themes || []).map((t) => (t && t.name) || t).filter(Boolean),
     thumbKey: m.thumbnailKey || null,
-    publisher: (m.publisher && m.publisher.username) || null,
-    downloads: m.downloadCount || 0,
+    author: (m.publisher && m.publisher.username) || null,
+    views: m.viewCount || 0,
+    installs: m.downloadCount || 0,
     likes: m.likeCount || 0,
-    status: m.status || null,
+    trending: !!m.isTrending,
+    working: (m.status || "working") === "working",
+    description: (m.description || "").slice(0, 700),
     updatedAt: m.updatedAt || null,
   };
 }
@@ -282,6 +285,14 @@ export default {
         ready: ready.has(m.id), // file already in R2 → installs instantly from us
       }));
       return json({ total, page, pageSize: size, readyCount: ready.size, mods });
+    }
+
+    // Full catalog in one shot — the app filters/sorts/counts it client-side.
+    if (path === "/all") {
+      const all = await getCatalog(env);
+      const ready = await getMirrored(env);
+      const mods = all.map((m) => ({ ...m, thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null, ready: ready.has(m.id) }));
+      return json({ total: mods.length, readyCount: ready.size, mods });
     }
 
     if (path.startsWith("/img/")) {
