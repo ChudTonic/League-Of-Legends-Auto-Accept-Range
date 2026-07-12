@@ -6,6 +6,7 @@
 
 #![allow(dead_code)] // consumed by S2+
 
+pub mod announcer_fix;
 pub mod bridge;
 pub mod downloads;
 pub mod favorites;

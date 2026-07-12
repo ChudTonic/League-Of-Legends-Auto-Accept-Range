@@ -23,8 +23,24 @@
     selId: null, installed: {}, favs: [], installing: {}, autoUpdate: true,
     cats: [], themesList: [],
     bundles: null, bundleInstalling: {},
+    // modId -> post-download phase ("converting"), set by the backend's
+    // library-install-phase event; swaps the progress caption while the pack
+    // is being rewritten (e.g. announcer packs retargeted for all modes).
+    phase: {},
   };
   let root = null;
+
+  // Backend phase events for in-flight installs (e.g. announcer packs get a
+  // "Converting for all modes…" pass right after the download finishes).
+  const EV = window.__TAURI__ && window.__TAURI__.event;
+  if (EV && EV.listen) {
+    EV.listen("library-install-phase", (e) => {
+      const p = (e && e.payload) || {};
+      if (!p.modId || st.installing[p.modId] == null) return;
+      st.phase[p.modId] = p.phase || "converting";
+      setInstallPhaseUI(p.modId);
+    });
+  }
 
   function adapt(m) {
     const champ = m.champions && m.champions[0];
@@ -318,7 +334,9 @@
     const inst = st.installed[m.id]; const pct = st.installing[m.id]; const installing = pct != null;
     const isFav = st.favs.includes(m.id);
     let action;
-    if (installing) action = `<div class="lb-mprog"><div class="lb-mprog-bar" style="width:${Math.round(pct)}%"></div></div><div class="lb-mprog-cap">Downloading… ${Math.round(pct)}%</div>`;
+    if (installing) action = st.phase[m.id]
+      ? `<div class="lb-mprog"><div class="lb-mprog-bar" style="width:100%"></div></div><div class="lb-mprog-cap">Converting for all modes…</div>`
+      : `<div class="lb-mprog"><div class="lb-mprog-bar" style="width:${Math.round(pct)}%"></div></div><div class="lb-mprog-cap">Downloading… ${Math.round(pct)}%</div>`;
     else if (inst) action = `<div class="lb-minstalled"><span class="chip lb-chip-ok"><span class="lb-dot on"></span>INSTALLED v${esc(inst.version || "1.0.0")}</span><span class="lb-inchamp">Ready in champ select ✓</span><button class="lb-trash" data-remove="${esc(m.id)}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg></button></div>`;
     else if (!m.ready) action = `<button class="btn primary lb-minstall" disabled style="opacity:.5;cursor:default">Preparing this mod — check back soon</button>`;
     else action = `<button class="btn primary lb-minstall" data-install="${esc(m.id)}">↓ Install to Chud · v${esc(m.version)}</button>`;
@@ -392,6 +410,7 @@
   // doesn't re-paint (and reload the splash image) — that caused visible modal
   // flicker. paint() is only called on state transitions (start/finish).
   function setInstallProgressUI(id, pct) {
+    if (st.phase[id]) return; // conversion phase owns the caption now
     const p = Math.round(pct);
     const bar = document.querySelector(".lb-mprog-bar");
     if (bar) bar.style.width = p + "%";
@@ -399,6 +418,17 @@
     if (cap) cap.textContent = `Downloading… ${p}%`;
     const chip = root && root.querySelector(`.lb-qpct[data-pctid="${id}"]`);
     if (chip) chip.textContent = p + "%";
+  }
+
+  // Download finished, backend is rewriting the pack (announcer retarget):
+  // pin the bar full and swap the caption until the install call resolves.
+  function setInstallPhaseUI(id) {
+    const bar = document.querySelector(".lb-mprog-bar");
+    if (bar) bar.style.width = "100%";
+    const cap = document.querySelector(".lb-mprog-cap");
+    if (cap) cap.textContent = "Converting for all modes…";
+    const chip = root && root.querySelector(`.lb-qpct[data-pctid="${id}"]`);
+    if (chip) chip.textContent = "CNV";
   }
 
   async function install(id) {
@@ -411,11 +441,11 @@
     const iv = setInterval(() => { const c = st.installing[id]; if (c == null) return clearInterval(iv); st.installing[id] = Math.min(94, c + 3 + Math.random() * 6); setInstallProgressUI(id, st.installing[id]); }, 180);
     try {
       const rec = await inv("library_install", { modId: id, name: m.name || id, champ: m.champ || "", champId: m.champId || null, category: m.rawCategory || "" });
-      clearInterval(iv); delete st.installing[id];
+      clearInterval(iv); delete st.installing[id]; delete st.phase[id];
       st.installed[id] = rec || { name: m.name, version: "1.0.0" };
       toast("Mod installed", `${m.name || "Mod"} — pick it from the Custom Mods button in champ select.`, "success");
     } catch (e) {
-      clearInterval(iv); delete st.installing[id];
+      clearInterval(iv); delete st.installing[id]; delete st.phase[id];
       toast("Install failed", String(e).slice(0, 120), "danger");
     }
     paint();

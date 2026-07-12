@@ -961,6 +961,7 @@ fn library_category_dir(category: &str) -> Option<&'static str> {
 /// the caller records it, so `library_install_bundle` can batch a whole pack
 /// under one save). Shared by single install and bundle install.
 async fn place_library_mod(
+    app: Option<&AppHandle>,
     base: &str,
     http: &reqwest::Client,
     mod_id: &str,
@@ -992,13 +993,36 @@ async fn place_library_mod(
         .map_err(|e| e.to_string())?;
     let url = dl.get("url").and_then(|v| v.as_str()).ok_or("could not resolve download")?.to_string();
     let bytes = http.get(&url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
-    let size_mb = (bytes.len() as f64) / 1_048_576.0;
     // A tiny body is the Worker's 404 ("not found") — the file isn't mirrored /
     // resolvable yet. Treat as a real failure so a bundle reports it, not a
     // 9-byte .fantome written to disk.
     if bytes.len() < 1024 {
         return Err(format!("'{name}' isn't available yet (still mirroring) — try again shortly."));
     }
+
+    // Announcer packs: retarget the global announcer banks so the pack works
+    // on SR, ARAM (classic + Bloom variant), and Nexus Blitz — done once here
+    // at download time, never during a live champ select. The UI swaps its
+    // download bar to a "Converting for all modes…" phase on this event.
+    let bytes: Vec<u8> = if category == "announcer" {
+        if let Some(app) = app {
+            let _ = app.emit("library-install-phase", json!({ "modId": mod_id, "phase": "converting" }));
+        }
+        let original = bytes.to_vec();
+        let converted = tokio::task::spawn_blocking(move || skins::announcer_fix::retarget_announcer_pack(&original))
+            .await
+            .map_err(|e| e.to_string())?;
+        match converted {
+            Some(fixed) => fixed,
+            None => {
+                log_warn!("[LIBRARY] announcer pack '{name}' has no global announcer banks - installed as-is");
+                bytes.to_vec()
+            }
+        }
+    } else {
+        bytes.to_vec()
+    };
+    let size_mb = (bytes.len() as f64) / 1_048_576.0;
 
     let dir = skins::paths::mods_dir().join(&rel_dir);
     tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
@@ -1013,6 +1037,7 @@ async fn place_library_mod(
 
 #[tauri::command]
 async fn library_install(
+    app: AppHandle,
     mod_id: String,
     name: String,
     champ: String,
@@ -1022,7 +1047,7 @@ async fn library_install(
 ) -> Result<serde_json::Value, String> {
     let endpoint = { state.config.lock_safe().library.endpoint.clone() };
     let http = lcu::build_client(180.0);
-    let rec = place_library_mod(endpoint.trim_end_matches('/'), &http, &mod_id, &name, &champ, champ_id, &category.unwrap_or_default()).await?;
+    let rec = place_library_mod(Some(&app), endpoint.trim_end_matches('/'), &http, &mod_id, &name, &champ, champ_id, &category.unwrap_or_default()).await?;
     {
         let mut c = state.config.lock_safe();
         c.library.installed.insert(mod_id, rec.clone());
@@ -1066,7 +1091,7 @@ async fn library_install_bundle(
         if id.is_empty() {
             continue;
         }
-        match place_library_mod(&base, &http, &id, &nm, &champ, champ_id, "champion_skin").await {
+        match place_library_mod(None, &base, &http, &id, &nm, &champ, champ_id, "champion_skin").await {
             Ok(rec) => recs.push((id, rec)),
             Err(e) => { log_warn!("[LIBRARY] bundle '{champ}' skin '{nm}' skipped: {e}"); failed.push(nm); }
         }
