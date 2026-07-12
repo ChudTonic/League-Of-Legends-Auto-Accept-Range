@@ -8,6 +8,7 @@
 !/relay-worker/
 !/runes-worker/
 !/skins-worker/
+!/tools/
 !/README.md
 !/.gitignore
 !/.gitattributes
