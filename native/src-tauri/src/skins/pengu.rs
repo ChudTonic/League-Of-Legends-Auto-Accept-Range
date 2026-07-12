@@ -367,13 +367,28 @@ pub fn set_league_path(league_path: &str) -> bool {
     run_cli(dir, &["--set-league-path", trimmed, "--silent"], &[0])
 }
 
-/// Force-activate Pengu Loader when Chud launches (ported from
-/// `activate_on_start`).
-pub fn activate_on_start(league_path: Option<&str>) -> bool {
+/// Outcome of `activate_on_start`, so the caller can tell the user whether the
+/// League client actually rebooted (Pengu's `d3d9.dll` hook only loads on a
+/// client restart; that restart hits the LCU and intermittently fails when the
+/// client is unreachable — a login screen, mid-transition, or stale lockfile).
+pub struct ActivateResult {
+    /// Pengu's `--force-activate` succeeded (the hook is in place on disk).
+    pub activated: bool,
+    /// League was running, so a client restart was needed to load the hook.
+    pub restart_needed: bool,
+    /// The client restart actually went through. When `restart_needed` is true
+    /// but this is false, the user must restart League manually to load Pengu.
+    pub restarted: bool,
+}
+
+/// Force-activate Pengu Loader (ported from `activate_on_start`). Places the
+/// hook, then restarts the League client so it loads with it — reporting
+/// whether that restart succeeded so the UI can fall back to "restart manually".
+pub fn activate_on_start(league_path: Option<&str>) -> ActivateResult {
     let dir = pengu_dir();
     if !is_available(dir) {
         log_info!("[PENGU] Pengu Loader not available; skipping activation.");
-        return false;
+        return ActivateResult { activated: false, restart_needed: false, restarted: false };
     }
 
     if let Some(path) = league_path {
@@ -392,10 +407,16 @@ pub fn activate_on_start(league_path: Option<&str>) -> bool {
     write_active_flag();
 
     let activated = run_cli(dir, &["--force-activate", "--silent"], &[0]);
+    let mut restarted = false;
     if activated && restart_needed {
-        run_cli(dir, &["--restart-client", "--silent"], &[0]);
+        restarted = run_cli(dir, &["--restart-client", "--silent"], &[0]);
+        if !restarted {
+            log_warn!(
+                "[PENGU] Client restart failed (LCU unreachable) — Pengu is activated but the user must restart League manually to load it."
+            );
+        }
     }
-    activated
+    ActivateResult { activated, restart_needed, restarted }
 }
 
 /// Force-deactivate Pengu Loader when Chud shuts down (ported from

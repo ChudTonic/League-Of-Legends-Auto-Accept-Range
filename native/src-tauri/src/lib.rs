@@ -572,8 +572,14 @@ fn skins_activate_pengu(state: tauri::State<Arc<AppState>>) -> Result<serde_json
     } else {
         skins::lcu_ext::resolve_game_dir().map(|p| p.to_string_lossy().into_owned())
     };
-    if skins::pengu::activate_on_start(league_path.as_deref()) {
-        Ok(json!({ "ok": true, "leaguePath": league_path }))
+    let res = skins::pengu::activate_on_start(league_path.as_deref());
+    if res.activated {
+        Ok(json!({
+            "ok": true,
+            "leaguePath": league_path,
+            "restartNeeded": res.restart_needed,
+            "restarted": res.restarted,
+        }))
     } else {
         Err("Couldn't activate Pengu Loader. Make sure League of Legends is installed and, if needed, set its path in Settings, then try again.".to_string())
     }

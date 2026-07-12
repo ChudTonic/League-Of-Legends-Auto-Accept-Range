@@ -837,8 +837,17 @@ async function onSkinsActivate() {
   if (btn) btn.disabled = true;
   try {
     if (TAURI) {
-      await TAURI.invoke("skins_activate_pengu");
-      toast("Pengu Loader activated", "League will restart if it's running.", "success");
+      const r = await TAURI.invoke("skins_activate_pengu");
+      if (r && r.restartNeeded && !r.restarted) {
+        // Hook placed, but the client-restart request couldn't reach League
+        // (login screen / mid-transition / stale lockfile). A manual restart
+        // loads the now-present hook reliably.
+        toast("Pengu activated — restart League to finish", "Chud couldn't auto-restart your client. Fully close League and reopen it to load Chud's skins.", "warning");
+      } else if (r && r.restartNeeded && r.restarted) {
+        toast("Pengu Loader activated", "Your League client is restarting to load Chud.", "success");
+      } else {
+        toast("Pengu Loader activated", "Start League to load Chud's skins.", "success");
+      }
     } else {
       toast("Pengu Loader activated", "(preview mode — no backend)", "success");
     }
