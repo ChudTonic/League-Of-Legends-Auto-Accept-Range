@@ -6,6 +6,7 @@
 !/native/
 !/docs/
 !/relay-worker/
+!/runes-worker/
 !/README.md
 !/.gitignore
 !/.gitattributes
@@ -14,6 +15,10 @@
 relay-worker/target/
 relay-worker/build/
 relay-worker/.wrangler/
+
+# Runes worker (JS) local-only artifacts
+runes-worker/node_modules/
+runes-worker/.wrangler/
 
 # ── Inside native/: build output + local-only files ──
 native/target/
