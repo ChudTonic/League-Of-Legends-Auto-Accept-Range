@@ -124,6 +124,27 @@ impl Default for SkinsCfg {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Runes {
+    /// Master switch for the rune/spell/build auto-importer.
+    pub enabled: bool,
+    /// Auto-import the moment you lock a champion in champ select.
+    pub auto_import: bool,
+    /// Chud "runes" Cloudflare Worker URL (the `/runes` endpoint that returns
+    /// the normalized build). Empty = feature inert (no import attempted).
+    pub endpoint: String,
+    /// Preferred build source, passed through to the Worker ("winrate" |
+    /// "popular"); the Worker decides how to honor it.
+    pub sort: String,
+}
+
+impl Default for Runes {
+    fn default() -> Self {
+        Self { enabled: false, auto_import: true, endpoint: String::new(), sort: "winrate".into() }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -133,6 +154,7 @@ pub struct Config {
     pub lcu: Lcu,
     pub safety: Safety,
     pub skins: SkinsCfg,
+    pub runes: Runes,
 }
 
 /// Per-user config file path: `%APPDATA%/LeagueOfLegendsTools/config.json`.

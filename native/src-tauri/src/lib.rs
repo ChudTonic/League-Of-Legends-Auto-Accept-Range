@@ -14,6 +14,7 @@ mod input;
 mod lcu;
 mod lcu_ws;
 mod profile;
+mod runes;
 mod safety;
 mod skins;
 mod stats;
@@ -724,6 +725,73 @@ fn skins_party_get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Valu
     }
 }
 
+/// Background auto-import: while in champ select, when your picked champion
+/// changes (and runes auto-import is on + configured), pull + apply the
+/// current-patch best build for it — once per champion. Idles cheaply
+/// otherwise. Self-contained: touches only the runes config + LCU, never the
+/// auto-accept/skins subsystems.
+fn spawn_runes_auto_import(state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        let http = lcu::build_client(6.0);
+        let mut last_champ: Option<i64> = None;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let (enabled, auto, endpoint, sort) = {
+                let c = state.config.lock_safe();
+                (c.runes.enabled, c.runes.auto_import, c.runes.endpoint.clone(), c.runes.sort.clone())
+            };
+            if !enabled || !auto || endpoint.trim().is_empty() {
+                last_champ = None;
+                continue;
+            }
+            let Some(auth) = lcu::cached_auth() else {
+                last_champ = None;
+                continue;
+            };
+            match runes::locked_champ_and_role(&http, &auth).await {
+                Some((champ, role)) if last_champ != Some(champ) => {
+                    if let Some(build) = runes::fetch_build(&http, &endpoint, champ, &role, &sort).await {
+                        let applied = runes::apply_build(&http, &auth, &build).await;
+                        if applied.runes {
+                            last_champ = Some(champ);
+                            eprintln!("[runes] auto-imported build for champion {champ} ({role})");
+                        }
+                    }
+                }
+                Some(_) => {} // same champion, already imported
+                None => last_champ = None, // left champ select / no champion picked
+            }
+        }
+    });
+}
+
+/// Import the current-patch best runes + summoner spells + item build for your
+/// locked champion into the live client, via the runes Worker + the local LCU.
+/// Manual trigger for an "Import build" button; the (future) auto-import on
+/// champ-lock calls the same `runes::import_now`. No Riot Web API key involved.
+#[tauri::command]
+async fn runes_import_now(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let (enabled, endpoint, sort) = {
+        let c = state.config.lock_safe();
+        (c.runes.enabled, c.runes.endpoint.clone(), c.runes.sort.clone())
+    };
+    if !enabled {
+        return Err("Rune import is turned off — enable it in Settings first.".to_string());
+    }
+    if endpoint.trim().is_empty() {
+        return Err("Rune import isn't set up yet (no build server configured).".to_string());
+    }
+    let Some(auth) = lcu::cached_auth() else {
+        return Err("League client isn't running.".to_string());
+    };
+    let http = lcu::build_client(6.0);
+    let applied = runes::import_now(&http, &auth, &endpoint, &sort).await;
+    if !applied.runes && !applied.spells && !applied.items {
+        return Err("Couldn't import — be in champ select with a champion picked, and make sure a build exists for it.".to_string());
+    }
+    Ok(json!({ "runes": applied.runes, "spells": applied.spells, "items": applied.items }))
+}
+
 /// Update metadata surfaced to the UI so it can show a themed "update
 /// available" pill instead of a forced silent restart. See `updater_install`.
 #[derive(serde::Serialize)]
@@ -912,6 +980,7 @@ pub fn run() {
             skins_party_disable,
             skins_party_add_peer,
             skins_party_get_state,
+            runes_import_now,
             updater_check,
             updater_install
         ])
@@ -926,6 +995,10 @@ pub fn run() {
                 st.running.store(true, Ordering::SeqCst);
                 spawn_auto_accept(&handle, st.clone());
             }
+
+            // Rune/build auto-import watcher (inert until enabled + a Worker
+            // endpoint is configured).
+            spawn_runes_auto_import(st.clone());
 
             // Auto-update: on startup, silently check GitHub Releases for a
             // signed newer version, install it, and relaunch. This is what lets

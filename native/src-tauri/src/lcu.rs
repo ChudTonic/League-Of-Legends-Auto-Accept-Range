@@ -137,6 +137,34 @@ pub async fn get_json(client: &reqwest::Client, auth: &Auth, path: &str) -> Opti
     resp.json().await.ok()
 }
 
+/// Authed write to the LCU with an optional JSON body — the POST/PUT/DELETE/
+/// PATCH side that `get_json` doesn't cover (rune pages, item sets, champ-
+/// select selection). Returns the parsed response body on 2xx (or `Null` for
+/// an empty 2xx body, which many LCU writes return), and `None` on a transport
+/// failure or non-2xx status.
+pub async fn request_json(
+    client: &reqwest::Client,
+    auth: &Auth,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut req = client.request(method, format!("{}{}", auth.base_url, path)).header(AUTHORIZATION, &auth.header);
+    if let Some(b) = body {
+        req = req.json(b);
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let text = resp.text().await.ok()?;
+    if text.trim().is_empty() {
+        Some(serde_json::Value::Null)
+    } else {
+        serde_json::from_str(&text).ok()
+    }
+}
+
 /// Authed GET returning raw bytes + content-type — for proxying LCU asset
 /// images (`/lol-game-data/assets/...`) to the WebView.
 pub async fn get_bytes(client: &reqwest::Client, auth: &Auth, path: &str) -> Option<(Vec<u8>, String)> {
