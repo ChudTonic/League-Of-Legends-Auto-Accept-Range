@@ -37,7 +37,7 @@
       views: m.views || 0, installs: m.installs || 0, likes: m.likes || 0,
       updatedHrs: hoursSince(m.updatedAt), trending: !!m.trending, working: m.working !== false,
       version: "1.0.0", sizeMB: null, modifies: "Base",
-      description: m.description || "", hasVideo: false, thumb: m.thumb || null, ready: !!m.ready,
+      description: m.description || "", video: m.video || null, thumb: m.thumb || null, ready: !!m.ready,
     };
   }
 
@@ -290,7 +290,7 @@
       <div class="lb-mtop"></div>
       <div class="lb-mhead"><span class="lb-mtab">Overview</span><button class="lb-mx" data-close="1">✕</button></div>
       <div class="lb-mbody">
-        <div class="lb-mleft"><div class="lb-mpreview" style="${thumbStyle(m)}">${thumbInner(m)}</div>
+        <div class="lb-mleft"><div class="lb-mpreview" style="${thumbStyle(m)}">${thumbInner(m)}${m.video ? `<button class="lb-vplay" data-video="${esc(m.video)}" title="Watch showcase"><svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span>Watch showcase</span></button>` : ""}</div>
           <div class="lb-minfo">${m.champId ? `<img class="lb-ci" src="${CI(m.champId)}" alt="">` : ""}<span>Replaces <b>${esc(m.champ || m.category)}</b>. You (and synced party members) see it; opponents don't.</span></div>
         </div>
         <div class="lb-mright">
@@ -340,6 +340,12 @@
     if (search) { let t = null; search.oninput = () => { clearTimeout(t); st.q = search.value; t = setTimeout(paintSoft, 160); }; }
     on("[data-open]", "onclick", (e) => { if (e.target.closest("[data-fav],[data-install],[data-remove],[data-apply]")) return; st.selId = e.currentTarget.dataset.open; paint(); });
     on("[data-close]", "onclick", (e) => { if (e.target === e.currentTarget || e.currentTarget.classList.contains("lb-mx")) { st.selId = null; paint(); } });
+    on("[data-video]", "onclick", (e) => {
+      e.stopPropagation();
+      const vid = e.currentTarget.dataset.video;
+      const prev = e.currentTarget.closest(".lb-mpreview");
+      if (prev && vid) prev.innerHTML = `<iframe class="lb-vframe" src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(vid)}?autoplay=1&rel=0&modestbranding=1" title="Skin showcase" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>`;
+    });
     on("[data-fav]", "onclick", async (e) => { e.stopPropagation(); const id = e.currentTarget.dataset.fav; const on2 = !st.favs.includes(id); try { const favs = await inv("library_set_favorite", { modId: id, on: on2 }); st.favs = favs || st.favs; } catch (er) {} paint(); });
     on("[data-install]", "onclick", (e) => { e.stopPropagation(); install(e.currentTarget.dataset.install); });
     on("[data-bundle]", "onclick", (e) => { e.stopPropagation(); installBundle(e.currentTarget.dataset.bundle); });

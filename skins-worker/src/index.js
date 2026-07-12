@@ -22,10 +22,19 @@ function json(obj, status = 200) {
   return cors(new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }));
 }
 
+// Extract + archive a YouTube video id from a mod's description (many posts
+// embed a showcase video). Stored so it survives even if the source post
+// changes; the app plays it in an in-modal embed.
+function ytId(text) {
+  const m = (text || "").match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([A-Za-z0-9_-]{11})/i);
+  return m ? m[1] : null;
+}
+
 function normalize(m) {
   return {
     id: m.id,
     name: m.name,
+    video: ytId(m.description),
     champions: (m.champions || []).map((c) => ({ id: c.id, name: c.name })),
     category: m.category || null,
     themes: (m.themes || []).map((t) => (t && t.name) || t).filter(Boolean),
@@ -36,7 +45,7 @@ function normalize(m) {
     likes: m.likeCount || 0,
     trending: !!m.isTrending,
     working: (m.status || "working") === "working",
-    description: (m.description || "").slice(0, 700),
+    description: (m.description || "").slice(0, 1600),
     updatedAt: m.updatedAt || null,
   };
 }
@@ -317,6 +326,7 @@ export default {
       const total = items.length;
       const mods = items.slice(page * size, page * size + size).map((m) => ({
         ...m,
+        video: m.video || ytId(m.description),
         thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null,
         ready: ready.has(m.id), // file already in R2 → installs instantly from us
       }));
@@ -327,7 +337,7 @@ export default {
     if (path === "/all") {
       const all = await getCatalog(env);
       const ready = await getMirrored(env);
-      const mods = all.map((m) => ({ ...m, thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null, ready: ready.has(m.id) }));
+      const mods = all.map((m) => ({ ...m, video: m.video || ytId(m.description), thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null, ready: ready.has(m.id) }));
       return json({ total: mods.length, readyCount: ready.size, mods });
     }
 
