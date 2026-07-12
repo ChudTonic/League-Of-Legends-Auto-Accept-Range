@@ -120,3 +120,5 @@
 .lb-mprog-cap { font-family: var(--font-mono); font-size: 11px; color: #7ceeff; margin-top: 6px; }
 .lb-minstalled { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .lb-mfoot { font-family: var(--font-mono); font-size: 9.5px; color: #6b6b96; margin-top: 8px; }
+.lb-qa.lb-disabled { opacity: .3; cursor: default; }
+.lb-qa.lb-disabled:hover { border-color: rgba(255,255,255,0.14); }

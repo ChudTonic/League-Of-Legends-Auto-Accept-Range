@@ -89,11 +89,13 @@
     if (m.champId) return `<img class="lb-ph-icon" loading="lazy" src="${CI(m.champId)}" alt="" onerror="this.style.display='none'">`;
     return `<span class="lb-ph-cat">${esc(catShort(m.category))}</span>`;
   }
+  const DL_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>`;
   function installBtnState(m) {
     const pct = st.installing[m.id];
     if (pct != null) return `<span class="lb-qa lb-qpct">${Math.round(pct)}%</span>`;
     if (st.installed[m.id]) return `<span class="lb-qa lb-qcheck" title="Installed"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>`;
-    return `<button class="lb-qa lb-qdl" data-install="${esc(m.id)}" title="Install"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg></button>`;
+    if (!m.ready) return `<span class="lb-qa lb-qdl lb-disabled" title="Preparing this mod — check back soon">${DL_ICON}</span>`;
+    return `<button class="lb-qa lb-qdl" data-install="${esc(m.id)}" title="Install">${DL_ICON}</button>`;
   }
   function cardHtml(m) {
     const isFav = st.favs.includes(m.id);
@@ -221,6 +223,7 @@
     let action;
     if (installing) action = `<div class="lb-mprog"><div class="lb-mprog-bar" style="width:${Math.round(pct)}%"></div></div><div class="lb-mprog-cap">Downloading… ${Math.round(pct)}%</div>`;
     else if (inst) action = `<div class="lb-minstalled"><span class="chip lb-chip-ok"><span class="lb-dot on"></span>INSTALLED v${esc(inst.version || "1.0.0")}</span><button class="btn sm" data-apply="${esc(m.id)}">Apply in Skins</button><button class="lb-trash" data-remove="${esc(m.id)}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg></button></div>`;
+    else if (!m.ready) action = `<button class="btn primary lb-minstall" disabled style="opacity:.5;cursor:default">Preparing this mod — check back soon</button>`;
     else action = `<button class="btn primary lb-minstall" data-install="${esc(m.id)}">↓ Install to Chud · v${esc(m.version)}</button>`;
     return `<div class="lb-backdrop" data-close="1"><div class="lb-modal" role="dialog">
       <div class="lb-mtop"></div>
@@ -286,6 +289,7 @@
   async function install(id) {
     if (st.installing[id] != null || st.installed[id]) return;
     const m = (st.catalog || []).find((x) => x.id === id) || { name: id, champ: "" };
+    if (!m.ready) { toast("Not ready yet", "This mod is still being prepared — try again shortly.", "warning"); return; }
     // Indeterminate visual progress while the real download runs.
     st.installing[id] = 5; paint();
     const iv = setInterval(() => { const c = st.installing[id]; if (c == null) return clearInterval(iv); st.installing[id] = Math.min(94, c + 3 + Math.random() * 6); paint(); }, 180);
