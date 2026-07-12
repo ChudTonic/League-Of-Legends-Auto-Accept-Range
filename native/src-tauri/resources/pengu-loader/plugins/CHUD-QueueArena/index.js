@@ -11,6 +11,12 @@
   let dismissed = false;       // user closed it this queue (resets when queue ends)
   let inQueue = false;
 
+  // ---- diagnostics: log boot + phase reads to the Chud file log ----
+  let ws = null; const wsQ = [];
+  function wsFlush() { if (ws && ws.readyState === 1) while (wsQ.length) ws.send(JSON.stringify(wsQ.shift())); }
+  function report(event, data) { wsQ.push({ type: "chroma-log", source: "CHUD-QueueArena", event, data: data || {}, timestamp: Date.now() }); wsFlush(); }
+  function wsConnect() { try { ws = new WebSocket(`ws://127.0.0.1:${bridgePort}`); ws.onopen = () => { report("online", { enabled }); wsFlush(); }; ws.onclose = () => setTimeout(wsConnect, 3000); ws.onerror = () => {}; } catch (e) {} }
+
   // ---- bridge (port discovery + config) ----
   async function discoverPort() {
     for (let p = 50000; p <= 50010; p++) {
@@ -24,9 +30,10 @@
     return enabled;
   }
 
-  // ---- LCU gameflow phase (queue / match-found detection) ----
+  // ---- gameflow phase from the Chud bridge (the app polls the LCU with auth,
+  // so this is reliable and reachable from the plugin, unlike a direct LCU fetch). ----
   async function fetchPhase() {
-    try { const r = await fetch("/lol-gameflow/v1/gameflow-phase", { cache: "no-store" }); if (r.ok) return (await r.text()).replace(/"/g, "").trim(); }
+    try { const r = await fetch(`http://127.0.0.1:${bridgePort}/phase`, { cache: "no-store" }); if (r.ok) { const d = await r.json(); return (d && d.phase) || null; } }
     catch (e) {}
     return null;
   }
@@ -157,8 +164,10 @@
   })();
 
   // ---- phase-driven show/hide ----
+  let lastPhase = " ";
   async function tick() {
     const phase = await fetchPhase();
+    if (phase !== lastPhase) { lastPhase = phase; report("phase", { phase, enabled }); }
     const nowQueue = phase === "Matchmaking";
     if (nowQueue && !inQueue) { dismissed = false; }        // fresh queue → allow it again
     inQueue = nowQueue;
@@ -169,7 +178,9 @@
 
   (async function boot() {
     await discoverPort();
+    wsConnect();
     enabled = await fetchEnabled();
+    report("boot", { bridgePort, enabled });
     setInterval(async () => { enabled = await fetchEnabled(); }, 4000); // pick up Chud toggle
     setInterval(tick, 1500);
     tick();

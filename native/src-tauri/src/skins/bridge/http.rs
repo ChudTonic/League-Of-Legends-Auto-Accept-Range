@@ -55,8 +55,29 @@ pub async fn route(ctx: &BridgeContext, path: &str, origin: Option<&str>) -> Res
     if path_clean == "/client-customization" {
         return handle_client_customization(ctx, origin);
     }
+    if path_clean == "/phase" {
+        return handle_phase(origin).await;
+    }
 
     not_found()
+}
+
+/// Current LCU gameflow phase (e.g. `Matchmaking`, `ReadyCheck`, `ChampSelect`),
+/// as JSON `{"phase": "..."}` or `{"phase": null}`. Client plugins (CHUD-QueueArena)
+/// poll this because a direct LCU fetch from the client CEF context isn't reliable;
+/// the Chud app holds LCU auth so this always resolves.
+async fn handle_phase(origin: Option<&str>) -> Response {
+    let phase = if let Some(auth) = crate::lcu::cached_auth() {
+        let client = crate::lcu::build_client(3.0);
+        crate::lcu::get_phase(&client, &auth).await
+    } else {
+        None
+    };
+    let body = serde_json::json!({ "phase": phase }).to_string();
+    let mut builder =
+        Response::builder().status(StatusCode::OK).header(axum::http::header::CONTENT_TYPE, "application/json");
+    builder = apply_cors(builder, origin);
+    builder.body(Body::from(body)).unwrap_or_else(|_| not_found())
 }
 
 /// Serve the in-client declutter/customization config as JSON. The
