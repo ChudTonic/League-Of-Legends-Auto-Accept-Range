@@ -121,6 +121,12 @@ struct MonitorState {
     /// now pointless (the game is loading vanilla assets) and must be
     /// aborted — `overlay::mk_run_overlay` polls this.
     auto_resumed: bool,
+    /// When the watcher first saw the game process this cycle.
+    game_first_seen: Option<Instant>,
+    /// Whether a suspend ever succeeded this cycle. A game that loads
+    /// without ever being frozen (anticheat refused `NtSuspendProcess`)
+    /// must NOT be hooked late — see `unsuspended_game_age`.
+    ever_suspended: bool,
 }
 
 impl MonitorState {
@@ -132,6 +138,8 @@ impl MonitorState {
             runoverlay_started: false,
             auto_resume: Duration::from_secs_f64(DEFAULT_AUTO_RESUME_SECS),
             auto_resumed: false,
+            game_first_seen: None,
+            ever_suspended: false,
         }
     }
 
@@ -177,6 +185,8 @@ impl GameMonitor {
             st.suspended = None;
             st.suspension_start = None;
             st.auto_resumed = false;
+            st.game_first_seen = None;
+            st.ever_suspended = false;
         }
         let state = Arc::clone(&self.state);
         self.watcher = Some(thread::spawn(move || watcher_loop(state)));
@@ -221,6 +231,21 @@ impl GameMonitor {
     /// game (`overlay::mk_run_overlay` polls this in its mkoverlay wait loop).
     pub fn auto_resume_fired(&self) -> bool {
         self.state.lock_safe().auto_resumed
+    }
+
+    /// Age of a game process that has been loading WITHOUT ever being
+    /// suspended (anticheat refused the freeze, or it spawned before the
+    /// watcher armed). `None` when no game has been seen or the freeze
+    /// worked. `overlay::mk_run_overlay` refuses to start `runoverlay`
+    /// against a game past `MAX_LATE_HOOK_AGE` — hooking cslol into a
+    /// half-loaded game crashes it (observed 2026-07-12: 31s unsuspended
+    /// load, hook at start+31s, game crashed).
+    pub fn unsuspended_game_age(&self) -> Option<Duration> {
+        let st = self.state.lock_safe();
+        if st.ever_suspended {
+            return None;
+        }
+        st.game_first_seen.map(|t| t.elapsed())
     }
 
     /// Stop the watcher, resuming the game first if it's still suspended
@@ -277,10 +302,14 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
             match (game_pid, st.suspended.is_some()) {
                 (Some(pid), false) => {
                     // Found it and we haven't suspended anything yet.
+                    if st.game_first_seen.is_none() {
+                        st.game_first_seen = Some(Instant::now());
+                    }
                     if let Some(raw) = open_game(pid) {
                         if suspend(raw) {
                             st.suspended = Some((pid, raw));
                             st.suspension_start = Some(Instant::now());
+                            st.ever_suspended = true;
                             interval = IDLE_INTERVAL;
                             log_info!("[monitor] Suspended game pid={pid}");
                         } else {

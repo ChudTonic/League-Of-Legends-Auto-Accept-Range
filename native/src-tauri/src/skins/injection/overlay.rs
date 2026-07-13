@@ -60,6 +60,13 @@ const SIZE_CHECK_EVERY: u32 = 40; // ~every 2s
 /// (observed 2026-07-12: 17 GB / 156 WADs for a 4-mod set that legitimately
 /// touched 4 WADs). Warn loudly so the offending mod set is identifiable.
 const OVERLAY_SIZE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Never inject the hook into a game that has been loading UNSUSPENDED
+/// longer than this: cslol's dll redirects file opens, and switching
+/// redirects mid-load on a game that already opened half its WADs crashes
+/// it (observed 2026-07-12: anticheat blocked the freeze, mkoverlay ran
+/// 31s, hook landed at load+31s, game crashed). A fresh unsuspended game
+/// (a few seconds old) is still safe — that's cslol's normal hook window.
+const MAX_LATE_HOOK_AGE: Duration = Duration::from_secs(8);
 
 /// How the mkoverlay wait loop ended.
 enum BuildWait {
@@ -81,7 +88,8 @@ enum BuildWait {
 ///
 /// Returns `Ok(0)` on success, or `Ok(<code>)` mirroring one of Python's
 /// sentinel return codes (`127` missing tool, `124` mkoverlay timeout, `125`
-/// build aborted because the game auto-resumed without it, `1`
+/// build aborted because the game auto-resumed without it, `126` hook
+/// refused because the game loaded too long unsuspended, `1`
 /// general error, or the child's own nonzero exit code) — wrapped in
 /// `Result` per the S3 interface contract, but every failure path Python
 /// handled without raising stays an `Ok` here too; `Err` is reserved for
@@ -235,13 +243,26 @@ pub fn mk_run_overlay(
         cleanup_failed_build(mods_dir, overlay_dir);
         return Ok(125);
     }
+    // Same idea when the freeze never happened at all (anticheat refused the
+    // suspend): a game that has been loading normally for a while must not
+    // be hooked now — late injection into a half-loaded game crashes it.
+    if let Some(age) = game_monitor.unsuspended_game_age() {
+        if age > MAX_LATE_HOOK_AGE {
+            log_error!(
+                "[INJECT] Game has been loading UNSUSPENDED for {:.0}s (freeze was blocked) - hooking now risks crashing it; skipping overlay this game",
+                age.as_secs_f64()
+            );
+            cleanup_failed_build(mods_dir, overlay_dir);
+            return Ok(126);
+        }
+    }
 
     // Wipe extracted skin files now that mkoverlay is done with them, and
     // hide the overlay files so they can't be easily browsed.
     wipe_dir_contents(mods_dir);
     hide_directory_recursive(overlay_dir);
 
-    log_info!("[INJECT] mkoverlay done - keeping game frozen until runoverlay starts");
+    log_info!("[INJECT] mkoverlay done - starting runoverlay");
 
     // ---- runoverlay ----
     let cfg = overlay_dir.join("cslol-config.json");

@@ -103,6 +103,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
             let shared = skins.shared.lock_safe();
             (shared.selected_custom_mod.clone(), shared.category_mods.clone(), shared.locked_champ_id.or(shared.hovered_champ_id))
         };
+        let selected_custom_mod = drop_stale_custom_mod(&skins, bridge.as_ref(), selected_custom_mod, champ_id);
         let custom = selected_custom_mod.unwrap_or_else(|| CustomModSelection {
             skin_id: 0,
             champion_id: champ_id.unwrap_or(0),
@@ -140,6 +141,14 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         let shared = skins.shared.lock_safe();
         (shared.selected_custom_mod.clone(), shared.category_mods.clone())
     };
+
+    // A custom mod selected for a DIFFERENT champion is stale — the user
+    // picked it, then re-picked/swapped champions without reopening the
+    // Custom Mods UI. Injecting it anyway forced the wrong champion's mod
+    // into the overlay (observed: Selena S.T.U.N Ahri injected into an
+    // Akshan game — a 31s multi-champion build + a crash). Clear it and
+    // fall through to the normal skin path.
+    let selected_custom_mod = drop_stale_custom_mod(&skins, bridge.as_ref(), selected_custom_mod, champ_id);
 
     log_trigger_summary(ticker_id, &name, selected_custom_mod.as_ref(), &category_mods);
 
@@ -307,6 +316,33 @@ fn auto_select_historic_custom_mod(skins: &Arc<SkinsState>, champ_id: Option<i64
     };
     log_info!("[HISTORIC] Auto-selected saved custom mod: {} (skin {historic_skin_id})", selection.mod_name);
     skins.shared.lock_safe().selected_custom_mod = Some(selection);
+}
+
+/// Clear (and un-broadcast) a selected custom mod whose target champion
+/// doesn't match the champion actually locked/hovered for THIS game.
+/// Returns the selection only while it's still valid.
+fn drop_stale_custom_mod(
+    skins: &Arc<SkinsState>,
+    bridge: Option<&BridgeHandle>,
+    selection: Option<CustomModSelection>,
+    champ_id: Option<i64>,
+) -> Option<CustomModSelection> {
+    let m = selection?;
+    let stale = m.champion_id != 0 && champ_id.is_some_and(|c| c != m.champion_id);
+    if !stale {
+        return Some(m);
+    }
+    log_warn!(
+        "[INJECT] Clearing stale custom mod '{}' - it targets champion {} but champion {:?} is locked",
+        m.mod_name,
+        m.champion_id,
+        champ_id
+    );
+    skins.shared.lock_safe().selected_custom_mod = None;
+    if let Some(b) = bridge {
+        b.broadcast_custom_mod_state(false, None, None);
+    }
+    None
 }
 
 fn relative_path_of(path: &Path, root: &Path) -> String {
