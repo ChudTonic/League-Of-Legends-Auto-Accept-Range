@@ -54,6 +54,7 @@
       updatedHrs: hoursSince(m.updatedAt), trending: !!m.trending, working: m.working !== false,
       version: "1.0.0", sizeMB: null, modifies: "Base",
       description: m.description || "", video: m.video || null, thumb: m.thumb || null, ready: !!m.ready,
+      chudOriginal: !!m.chudOriginal,
     };
   }
 
@@ -157,7 +158,7 @@
     return `<div class="lb-card" data-open="${esc(m.id)}">
       <div class="lb-thumb" style="${thumbStyle(m)}">
         ${thumbInner(m)}
-        ${m.trending ? `<span class="lb-badge lb-trend">TRENDING</span>` : ""}
+        ${m.chudOriginal ? `<span class="lb-badge lb-original">CHUD ORIGINAL</span>` : m.trending ? `<span class="lb-badge lb-trend">TRENDING</span>` : ""}
         ${!m.working ? `<span class="lb-badge lb-broken">BROKEN</span>` : ""}
         <div class="lb-actions">
           <button class="lb-qa lb-fav ${isFav ? "on" : ""}" data-fav="${esc(m.id)}" title="Favorite"><svg viewBox="0 0 24 24" width="13" height="13" fill="${isFav ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.3S3.5 15.4 2.6 9.9C2 6.6 4.6 4 7.5 4c1.9 0 3.4 1 4.5 2.6C13.1 5 14.6 4 16.5 4c2.9 0 5.5 2.6 4.9 5.9-.9 5.5-9.4 10.4-9.4 10.4z"/></svg></button>

@@ -30,6 +30,32 @@ function ytId(text) {
   return m ? m[1] : null;
 }
 
+// Chud Originals — our own first-party packs, merged into the catalog at
+// serve time (the daily Runeforge crawl overwrites catalog:v1, so these can't
+// live in KV). Their files are uploaded to R2 at f/{id}.fantome, so the
+// existing /file path serves them and they're always "ready".
+const CURATED = [
+  {
+    id: "chud-burntpeanut",
+    name: "BurntPeanut Announcer",
+    video: null,
+    champions: [],
+    category: "announcer",
+    themes: ["meme"],
+    thumbKey: "chud/burntpeanut.jpg",
+    author: "TheBurntPeanut",
+    views: 0,
+    installs: 0,
+    likes: 0,
+    trending: false,
+    working: true,
+    description: "Hear TheBurntPeanut call your kills, aces, and objectives. A Chud Original.",
+    updatedAt: "2026-07-13T00:00:00.000Z",
+    ready: true,
+    chudOriginal: true,
+  },
+];
+
 function normalize(m) {
   return {
     id: m.id,
@@ -134,7 +160,10 @@ async function getCatalog(env) {
   const now = Date.now();
   if (_catCache && now - _catCache.ts < 60000) return _catCache.data;
   const raw = await env.CATALOG.get("catalog:v1");
-  const data = raw ? JSON.parse(raw) : [];
+  const crawled = raw ? JSON.parse(raw) : [];
+  // Chud Originals first, then the crawled catalog (dedup by id just in case).
+  const ids = new Set(CURATED.map((c) => c.id));
+  const data = [...CURATED, ...crawled.filter((m) => !ids.has(m.id))];
   _catCache = { data, ts: now };
   return data;
 }
@@ -340,7 +369,7 @@ export default {
         ...m,
         video: m.video || ytId(m.description),
         thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null,
-        ready: ready.has(m.id), // file already in R2 → installs instantly from us
+        ready: ready.has(m.id) || !!m.ready, // in R2 (or a curated Original) → installs instantly
       }));
       return json({ total, page, pageSize: size, readyCount: ready.size, mods });
     }
@@ -349,7 +378,7 @@ export default {
     if (path === "/all") {
       const all = await getCatalog(env);
       const ready = await getMirrored(env);
-      const mods = all.map((m) => ({ ...m, video: m.video || ytId(m.description), thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null, ready: ready.has(m.id) }));
+      const mods = all.map((m) => ({ ...m, video: m.video || ytId(m.description), thumb: m.thumbKey ? `${origin}/img/${m.thumbKey}` : null, ready: ready.has(m.id) || !!m.ready }));
       return json({ total: mods.length, readyCount: ready.size, mods });
     }
 

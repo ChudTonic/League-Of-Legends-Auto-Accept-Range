@@ -57,6 +57,7 @@
 .lb-ph-cat { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em; color: rgba(255,255,255,0.55); }
 .lb-badge { position: absolute; font-family: var(--font-mono); font-size: 8.5px; font-weight: 700; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; }
 .lb-trend { top: 8px; left: 8px; background: var(--neon-grad-h); color: #0a0a1f; box-shadow: 0 2px 10px rgba(255,61,154,.5); }
+.lb-original { top: 8px; left: 8px; background: linear-gradient(90deg, #ffd34d, #ff9a3d); color: #2a1600; box-shadow: 0 2px 12px rgba(255,180,60,.55); letter-spacing: .04em; }
 .lb-broken { bottom: 8px; left: 8px; color: #e6a23c; border: 1px solid rgba(230,162,60,0.5); background: rgba(10,10,31,0.7); }
 .lb-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }
 .lb-qa { width: 27px; height: 27px; border-radius: 8px; display: grid; place-items: center; background: rgba(10,10,31,0.62); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.14); cursor: pointer; color: #f2f2ff; transition: border-color .15s, transform .1s; }
