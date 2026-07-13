@@ -1035,6 +1035,29 @@ pub(crate) async fn place_library_mod(
     Ok(config::InstalledMod { name: name.to_string(), champ: champ.to_string(), version: "1.0.0".into(), size_mb, file: rel_file })
 }
 
+/// Announcer Studio: return the assignable slot list (key/category/label/
+/// milestone) so the UI can render the builder grid.
+#[tauri::command]
+fn announcer_studio_slots() -> serde_json::Value {
+    serde_json::to_value(skins::announcer_studio::SLOTS).unwrap_or_else(|_| json!([]))
+}
+
+/// Announcer Studio: build + install a custom announcer pack from the UI's
+/// per-slot PCM audio. Returns `{ok, file, slots_filled, milestones_skipped, error}`.
+#[tauri::command]
+async fn announcer_studio_build(
+    name: String,
+    slots: Vec<skins::announcer_studio::SlotAudio>,
+    include_milestones: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        skins::announcer_studio::build_pack(&name, &slots, include_milestones.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::to_value(result).unwrap_or_else(|_| json!({"ok": false})))
+}
+
 #[tauri::command]
 async fn library_install(
     app: AppHandle,
@@ -1361,6 +1384,8 @@ pub fn run() {
             library_remove,
             library_bundles,
             library_install_bundle,
+            announcer_studio_slots,
+            announcer_studio_build,
             updater_check,
             updater_install
         ])

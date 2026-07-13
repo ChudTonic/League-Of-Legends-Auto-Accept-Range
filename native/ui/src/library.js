@@ -462,6 +462,15 @@
     st.tab = "bundles";
     if (window.ChudNavTo) window.ChudNavTo("library");
   };
+  // Dashboard BurntPeanut feature card -> Library, filtered to announcers,
+  // searching for the pack so it's the first thing shown.
+  window.ChudOpenAnnouncers = function () {
+    st.tab = "browse";
+    st.cat = "Announcer";
+    st.q = "BurntPeanut";
+    if (window.ChudNavTo) window.ChudNavTo("library");
+    if (root) { paint(); }
+  };
   // Shared fetch so the Dashboard can show the same pack data without duplicating it.
   window.ChudGetBundles = async function () {
     try { const r = await S.invoke("library_bundles"); return (r && r.bundles) || (S.hasBackend ? [] : MOCK_BUNDLES); }

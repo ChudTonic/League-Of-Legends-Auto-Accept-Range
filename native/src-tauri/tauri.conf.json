@@ -59,7 +59,8 @@
       "resources/CREDITS.md",
       "resources/cslol-tools/mod-tools.exe",
       "resources/cslol-tools/wad-extract.exe",
-      "resources/cslol-tools/wad-make.exe"
+      "resources/cslol-tools/wad-make.exe",
+      "resources/announcer-studio"
     ]
   }
 }

@@ -57,6 +57,10 @@
   --neon-grad:    linear-gradient(135deg, #ff3d9a, #35e4ff);
   --neon-grad-h:  linear-gradient(90deg, #ff3d9a, #35e4ff);
 
+  /* short aliases used across dashboard/studio markup */
+  --muted: #9a9ac8;
+  --line:  rgba(255,255,255,0.10);
+
   /* legacy accent names remapped onto the neon palette (profile.js uses these) */
   --gold:        #7ceeff;
   --gold-bright: #f2f2ff;
@@ -328,6 +332,21 @@ a:hover { color: var(--cyan); }
 
 .modules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 @media (max-width: 980px) { .modules { grid-template-columns: 1fr; } }
+
+/* Dashboard feature card (BurntPeanut) — fills the 3rd module slot beside Auto-Range */
+.feature-card { text-align: left; cursor: pointer; padding: 0; overflow: hidden; display: flex; flex-direction: column;
+  background: linear-gradient(180deg, rgba(255,61,154,0.08), rgba(255,255,255,0.03));
+  border: 1px solid rgba(255,61,154,0.28); transition: border-color .15s, transform .15s, box-shadow .15s; }
+.feature-card:hover { border-color: rgba(255,61,154,0.6); transform: translateY(-2px); box-shadow: 0 14px 34px rgba(0,0,0,0.45); }
+.fc-hero { position: relative; height: 118px; background-size: cover; background-position: center 34%;
+  border-bottom: 1px solid rgba(255,255,255,0.08); }
+.fc-hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 45%, rgba(12,14,20,0.85)); }
+.fc-badge { position: absolute; top: 10px; left: 10px; z-index: 1; font-size: 10px; font-weight: 800; letter-spacing: .08em;
+  color: #fff; background: rgba(255,61,154,0.92); padding: 4px 8px; border-radius: 6px; }
+.fc-title { font-weight: 800; font-size: 15px; padding: 12px 14px 0; }
+.fc-sub { color: var(--muted); font-size: 12.5px; line-height: 1.45; padding: 4px 14px 0; flex: 1; }
+.fc-foot { padding: 10px 14px 14px; }
+.fc-cta { color: #ff6bb2; font-weight: 700; font-size: 12.5px; }
 
 .mod {
   position: relative; overflow: hidden; display: flex; flex-direction: column;
@@ -605,3 +624,30 @@ body.no-motion *, body.no-motion *::before, body.no-motion *::after { animation:
 .pack-sub { font-family: var(--font-mono, monospace); font-size: 10px; color: #7ceeff; }
 .pack-loading { font-family: var(--font-mono, monospace); font-size: 12px; color: #6b6b96; padding: 14px; }
 @media (max-width: 1000px) { .packs { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Announcer Studio ─────────────────────────────────────────────────── */
+.stu-wrap { display: flex; flex-direction: column; gap: 14px; }
+.stu-head { display: flex; align-items: flex-start; justify-content: space-between; }
+.stu-tag { color: var(--muted); font-size: 13px; max-width: 640px; margin-top: 4px; line-height: 1.5; }
+.stu-bar { display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 4;
+  background: rgba(12,14,20,0.86); backdrop-filter: blur(6px); padding: 10px 0; border-bottom: 1px solid var(--line); }
+.stu-name { background: #171b23; border: 1px solid #2a2f3a; color: #e8e6e3; border-radius: 8px; padding: 9px 12px; font-size: 14px; font-weight: 700; width: 240px; }
+.stu-name:focus { border-color: #ff6bb2; outline: none; }
+.stu-count { color: var(--muted); font-size: 13px; flex: 1; }
+.stu-hint { color: #8a8f98; font-size: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; }
+.stu-cat { display: flex; flex-direction: column; gap: 8px; }
+.stu-cat-h { font-size: 11px; font-weight: 800; letter-spacing: .1em; color: #6f7684; text-transform: uppercase; margin-top: 6px; }
+.stu-slot { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(255,255,255,0.035); border: 1px solid var(--line); transition: border-color .12s, background .12s; }
+.stu-slot.filled { border-color: rgba(53,228,255,0.35); background: rgba(53,228,255,0.06); }
+.stu-slot.milestone { opacity: .82; }
+.stu-slot.drop { border-color: #ff6bb2; background: rgba(255,61,154,0.08); }
+.stu-slot-main { flex: 1; min-width: 0; }
+.stu-slot-label { font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.stu-ms { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; color: #e6a23c; border: 1px solid rgba(230,162,60,0.4); border-radius: 5px; padding: 1px 5px; cursor: help; }
+.stu-slot-state { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.stu-slot-acts { display: flex; align-items: center; gap: 6px; }
+.stu-mini { background: #1c2029; border: 1px solid #2c313c; color: #cdd2da; border-radius: 6px; padding: 5px 9px; font-size: 12px; cursor: pointer; transition: border-color .12s, color .12s; display: inline-flex; align-items: center; }
+.stu-mini:hover { border-color: #3a4150; color: #fff; }
+.stu-mini.rec { border-color: #ff5470; color: #ff8ca0; }
+.stu-mini.file { cursor: pointer; }

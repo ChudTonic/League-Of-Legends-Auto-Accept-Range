@@ -64,6 +64,7 @@ const NAV = [
   { page: "dashboard", label: "Dashboard", glyph: "dashboard" },
   { page: "profile", label: "Profile", glyph: "profile" },
   { page: "skins", label: "Skins", glyph: "skin" },
+  { page: "studio", label: "Studio", glyph: "bolt" },
   { page: "activity", label: "Activity", glyph: "activity" },
   { page: "settings", label: "Settings", glyph: "settings" },
   { page: "diagnostics", label: "Diagnostics", glyph: "diagnostics" },
@@ -170,6 +171,20 @@ function featuredPacksHtml() {
     <div class="packs">${cards}</div>`;
 }
 
+// Featured single-mod promo card that fills the empty 3rd module-grid slot
+// beside Auto-Range. Deep-links into the Library's announcer section where
+// the pack installs. Only shown when the Library is enabled.
+function featureCardHtml() {
+  if (!libraryEnabled) return "";
+  return `
+  <button class="mod feature-card" data-feature="burntpeanut">
+    <div class="fc-hero" style="background-image:url('img/burntpeanut.png')"><span class="fc-badge">NEW · ANNOUNCER</span></div>
+    <div class="fc-title">BurntPeanut Announcer</div>
+    <div class="fc-sub">Hear TheBurntPeanut call your kills, aces, and objectives — free in the Library.</div>
+    <div class="fc-foot"><span class="fc-cta">Get it in the Library →</span></div>
+  </button>`;
+}
+
 function dashboardHtml() {
   const s = state.summary;
   const aa = state.tools.find((x) => x.id === "auto_accept") || {};
@@ -200,7 +215,7 @@ function dashboardHtml() {
       <button class="btn sm primary" id="startAllBtn">Start All</button>
       <button class="btn sm" id="stopAll2Btn" ${state.activeToolCount > 0 ? "" : "disabled"}>Stop</button>
     </div>
-    <div class="modules">${state.tools.map(modCard).join("")}</div>
+    <div class="modules">${state.tools.map(modCard).join("")}${featureCardHtml()}</div>
     ${libraryEnabled ? featuredPacksHtml() : ""}
   </div>`;
 }
@@ -221,6 +236,7 @@ function wireDash() {
   const sh = document.getElementById("stopAllHero"); if (sh) sh.onclick = onStopAll;
   document.querySelectorAll("#page [data-admin]").forEach((b) => (b.onclick = () => invoke("request_admin")));
   document.querySelectorAll("#page [data-openbundle]").forEach((b) => (b.onclick = () => window.ChudOpenBundles && window.ChudOpenBundles()));
+  document.querySelectorAll("#page [data-feature]").forEach((b) => (b.onclick = () => { if (window.ChudOpenAnnouncers) window.ChudOpenAnnouncers(); else if (window.ChudNavTo) window.ChudNavTo("library"); }));
   // Lazy-load the featured packs once, then repaint the dashboard with them.
   if (libraryEnabled && dashBundles === null && !window._dashBundlesLoading && window.ChudGetBundles) {
     window._dashBundlesLoading = true;
@@ -955,6 +971,7 @@ function startSkinsPoll() {
 function stopSkinsPoll() { if (skinsPollTimer) { clearInterval(skinsPollTimer); skinsPollTimer = null; } }
 
 // ── Toasts ──────────────────────────────────────────────────────────────────
+window.ChudToast = (t, m, tone) => toast(t, m, tone);
 function toast(title, message, tone = "info") {
   const wrap = document.getElementById("toasts");
   const el = document.createElement("div");
@@ -993,6 +1010,7 @@ function renderPage() {
   else if (currentPage === "profile") { window.renderProfile?.(page); }
   else if (currentPage === "skins") { renderSkins(); }
   else if (currentPage === "library") { window.renderLibrary?.(page); }
+  else if (currentPage === "studio") { window.renderStudio?.(page); }
   else if (currentPage === "activity") { renderActivity(); }
   else if (currentPage === "diagnostics") { renderDiagnostics(); }
   else { page.innerHTML = `<div class="glass"><div class="muted">${esc(NAV.find((n) => n.page === currentPage)?.label || "")} — coming soon.</div></div>`; }
@@ -1023,7 +1041,7 @@ function patchDashboard() {
   setVal("lc-session", s.sessionMatches); setVal("lc-total", s.totalMatches); setVal("lc-uptime", s.uptime); setVal("lc-active", state.activeToolCount);
   const sh = document.getElementById("stopAllHero"); if (sh) sh.style.display = state.activeToolCount > 0 ? "" : "none";
   if (currentModulesSig() !== modulesSig) {
-    const modules = page.querySelector(".modules"); if (modules) modules.innerHTML = state.tools.map(modCard).join("");
+    const modules = page.querySelector(".modules"); if (modules) modules.innerHTML = state.tools.map(modCard).join("") + featureCardHtml();
     wireDash();
   }
 }
