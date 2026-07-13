@@ -960,7 +960,7 @@ fn library_category_dir(category: &str) -> Option<&'static str> {
 /// custom-mod store, returning the install record (WITHOUT touching config —
 /// the caller records it, so `library_install_bundle` can batch a whole pack
 /// under one save). Shared by single install and bundle install.
-async fn place_library_mod(
+pub(crate) async fn place_library_mod(
     app: Option<&AppHandle>,
     base: &str,
     http: &reqwest::Client,

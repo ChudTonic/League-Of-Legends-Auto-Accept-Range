@@ -102,11 +102,14 @@ struct Inner {
     my_token: Option<String>,
     relay: Option<PartyRelay>,
     peers: HashMap<u64, PartyPeer>,
-    /// Last-broadcast (skin_id, chroma_id, custom_mod_relative_path) so the
-    /// 1s tick only sends on an actual change — ported from
-    /// `_skin_broadcast_loop`'s `last_skin_id`/`last_chroma_id`/
-    /// `last_custom_mod` locals.
-    last_broadcast: Option<(Option<i64>, Option<i64>, Option<String>)>,
+    /// Last-broadcast (skin_id, chroma_id, custom_mod_relative_path,
+    /// announcer_mod_id) so the 1s tick only sends on an actual change —
+    /// ported from `_skin_broadcast_loop`'s `last_*` locals.
+    last_broadcast: Option<(Option<i64>, Option<i64>, Option<String>, Option<String>)>,
+    /// Library mod-ids of peer announcers we've already started (or
+    /// finished) downloading this session — dedups the download trigger
+    /// across member-update callbacks.
+    announcer_downloads: HashSet<String>,
     /// The lobby `partyId` whose auto-derived room we're currently connected
     /// to, or `None` when connected to our personal room (solo / manual). The
     /// auto-room loop compares this against the live lobby to decide when to
@@ -120,6 +123,9 @@ struct Inner {
 /// their own clone of the `Arc` (see `spawn_background_loops`/`connect_room`).
 pub struct PartyManager {
     skins: Arc<SkinsState>,
+    /// For AppState/config access (library install records — announcer sync)
+    /// and user-facing notifications.
+    app: AppHandle,
     /// Held so relay member-list updates (arriving on a background task) can
     /// push a fresh `party-state` broadcast without going through a
     /// `#[tauri::command]` round-trip — see `handle_members_update`.
@@ -144,6 +150,7 @@ impl PartyManager {
         let http_client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
         Arc::new(Self {
             skins,
+            app: app.clone(),
             bridge,
             http_client,
             relay_url,
@@ -157,6 +164,7 @@ impl PartyManager {
                 relay: None,
                 peers: HashMap::new(),
                 last_broadcast: None,
+                announcer_downloads: HashSet::new(),
                 current_party_id: None,
             }),
         })
@@ -438,8 +446,25 @@ impl PartyManager {
 
     /// Called by the relay's background task whenever the room's member list
     /// changes (ported from `PartyManager._on_relay_members_changed`).
-    fn handle_members_update(&self, members: Vec<RelayMember>) {
+    fn handle_members_update(self: &Arc<Self>, members: Vec<RelayMember>) {
         let Some(my_id) = self.inner.lock().unwrap_or_else(|e| e.into_inner()).my_summoner_id else { return };
+
+        // Announcer sync: a peer broadcasting a Library announcer we don't
+        // have gets downloaded + converted NOW (lobby/champ select), so it's
+        // staged and audible by the time the loadout injection runs.
+        for member in &members {
+            if member.summoner_id == my_id {
+                continue;
+            }
+            if let Some(skin) = &member.skin {
+                if let (Some(mod_id), Some(name)) = (
+                    skin.get("announcer_mod_id").and_then(Value::as_str),
+                    skin.get("announcer_name").and_then(Value::as_str),
+                ) {
+                    self.maybe_download_peer_announcer(mod_id.to_string(), name.to_string());
+                }
+            }
+        }
 
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -485,6 +510,51 @@ impl PartyManager {
         }
 
         self.broadcast_state();
+    }
+
+    /// Download + convert a peer's Library announcer in the background (once
+    /// per mod-id per session; no-op when it's already installed). The
+    /// existing Library pipeline does the work — including the all-modes
+    /// announcer retarget that runs on every announcer download.
+    fn maybe_download_peer_announcer(self: &Arc<Self>, mod_id: String, name: String) {
+        let app_state = self.app.state::<Arc<crate::AppState>>().inner().clone();
+        {
+            let cfg = app_state.config.lock_safe();
+            if cfg.library.installed.contains_key(&mod_id) {
+                return;
+            }
+        }
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if !inner.announcer_downloads.insert(mod_id.clone()) {
+                return; // already attempted this session
+            }
+        }
+        let endpoint = { app_state.config.lock_safe().library.endpoint.clone() };
+        let mgr = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            log_info!("[PARTY] Peer uses announcer '{name}' - downloading + converting so we hear it too");
+            let http = lcu::build_client(180.0);
+            match crate::place_library_mod(None, endpoint.trim_end_matches('/'), &http, &mod_id, &name, "", None, "announcer")
+                .await
+            {
+                Ok(rec) => {
+                    let app_state = mgr.app.state::<Arc<crate::AppState>>();
+                    {
+                        let mut cfg = app_state.config.lock_safe();
+                        cfg.library.installed.insert(mod_id.clone(), rec);
+                        let _ = cfg.save();
+                    }
+                    log_info!("[PARTY] Announcer '{name}' downloaded + converted - will be staged at injection");
+                }
+                Err(e) => {
+                    log_warn!("[PARTY] Could not fetch peer announcer '{name}': {e}");
+                    // Allow a retry on a later member update (e.g. transient net).
+                    let mut inner = mgr.inner.lock().unwrap_or_else(|er| er.into_inner());
+                    inner.announcer_downloads.remove(&mod_id);
+                }
+            }
+        });
     }
 
     // ─── Background loops ──────────────────────────────────────────────
@@ -605,13 +675,15 @@ impl PartyManager {
         };
         let (Some(champion_id), Some(skin_id)) = (champion_id, skin_id) else { return };
 
+        let announcer = self.my_library_announcer();
         let custom_mod_key = custom_mod.as_ref().map(|m| m.relative_path.clone());
+        let announcer_key = announcer.as_ref().map(|(id, _)| id.clone());
         let changed = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if !inner.enabled {
                 return;
             }
-            let current = (Some(skin_id), chroma_id, custom_mod_key);
+            let current = (Some(skin_id), chroma_id, custom_mod_key, announcer_key);
             let changed = inner.last_broadcast.as_ref() != Some(&current);
             if changed {
                 inner.last_broadcast = Some(current);
@@ -622,13 +694,32 @@ impl PartyManager {
             return;
         }
 
-        self.broadcast_skin_update(champion_id, skin_id, chroma_id, custom_mod.as_ref());
+        self.broadcast_skin_update(champion_id, skin_id, chroma_id, custom_mod.as_ref(), announcer);
+    }
+
+    /// The selected announcer, resolved back to its Library install record —
+    /// `Some((mod_id, display name))` only when it came from the Library
+    /// (peers can download the same id; hand-imported packs can't sync).
+    fn my_library_announcer(&self) -> Option<(String, String)> {
+        let rel = self.skins.shared.lock_safe().category_mods.announcer.as_ref().map(|a| a.relative_path.clone())?;
+        let app_state = self.app.state::<Arc<crate::AppState>>();
+        let cfg = app_state.config.lock_safe();
+        cfg.library.installed.iter().find(|(_, rec)| rec.file == rel).map(|(id, rec)| (id.clone(), rec.name.clone()))
     }
 
     /// `PartyManager.broadcast_skin_update` — for a custom mod, share a
     /// content hash instead of the file path (the peer resolves it locally
     /// via `find_local_mod_by_hash`; the raw path/bytes never cross the wire).
-    fn broadcast_skin_update(&self, champion_id: i64, skin_id: i64, chroma_id: Option<i64>, custom_mod: Option<&CustomModSelection>) {
+    /// A Library announcer selection rides along as its mod-id so peers can
+    /// download + convert the same pack and hear it too.
+    fn broadcast_skin_update(
+        &self,
+        champion_id: i64,
+        skin_id: i64,
+        chroma_id: Option<i64>,
+        custom_mod: Option<&CustomModSelection>,
+        announcer: Option<(String, String)>,
+    ) {
         let relay = { self.inner.lock().unwrap_or_else(|e| e.into_inner()).relay.clone() };
         let Some(relay) = relay else { return };
         if !relay.connected() {
@@ -641,6 +732,10 @@ impl PartyManager {
                 skin["custom_mod_hash"] = json!(hash);
                 skin["is_custom"] = json!(true);
             }
+        }
+        if let Some((mod_id, name)) = announcer {
+            skin["announcer_mod_id"] = json!(mod_id);
+            skin["announcer_name"] = json!(name);
         }
         log_info!("[SKIN_SEND] Broadcasting our pick: champion {champion_id}, skin {skin_id}, chroma {chroma_id:?}");
         relay.send_skin(Some(skin));
@@ -780,7 +875,46 @@ impl PartyManager {
     /// S5's trigger folds into `InjectionManager::inject_skin_immediately`'s
     /// `extra_mod_names`.
     pub async fn prepare_party_mods(self: &Arc<Self>) -> Vec<String> {
-        self.get_party_skins().await.iter().filter_map(Self::prepare_skin_for_injection).collect()
+        let mut folders: Vec<String> =
+            self.get_party_skins().await.iter().filter_map(Self::prepare_skin_for_injection).collect();
+        if let Some(folder) = self.prepare_peer_announcer() {
+            folders.push(folder);
+        }
+        folders
+    }
+
+    /// Stage a peer's synced announcer for this overlay — only when WE have
+    /// no announcer of our own selected (ours always wins; two announcer
+    /// packs in one overlay just collide on the same banks). Uses the first
+    /// peer broadcasting one whose pack is installed locally (downloaded by
+    /// `maybe_download_peer_announcer` back in lobby/champ select).
+    fn prepare_peer_announcer(&self) -> Option<String> {
+        if self.skins.shared.lock_safe().category_mods.announcer.is_some() {
+            return None;
+        }
+        let members =
+            { self.inner.lock().unwrap_or_else(|e| e.into_inner()).relay.as_ref().map(|r| r.members()).unwrap_or_default() };
+        let app_state = self.app.state::<Arc<crate::AppState>>();
+        for member in members {
+            let Some(skin) = member.skin.as_ref() else { continue };
+            let Some(mod_id) = skin.get("announcer_mod_id").and_then(Value::as_str) else { continue };
+            let file = { app_state.config.lock_safe().library.installed.get(mod_id).map(|r| r.file.clone()) };
+            let Some(file) = file else { continue }; // not downloaded (yet)
+            let source = paths::mods_dir().join(file.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if !source.is_file() {
+                continue;
+            }
+            let folder = source.file_stem().map(|n| n.to_string_lossy().into_owned())?;
+            let dest = paths::injection_mods_dir().join(&folder);
+            zips::safe_remove_entry(&dest);
+            if let Err(e) = zips::link_or_extract(&source, &dest, &paths::injection_extract_cache_dir()) {
+                log_warn!("[PARTY_INJECT] Failed to stage peer announcer {folder}: {e}");
+                continue;
+            }
+            log_info!("[PARTY_INJECT] Staged {}'s announcer: {folder}", member.summoner_name);
+            return Some(folder);
+        }
+        None
     }
 
     /// `PartyInjectionHook._prepare_single_skin` — resolve one party
@@ -1052,6 +1186,7 @@ mod tests {
             relay: None,
             peers: HashMap::new(),
             last_broadcast: None,
+            announcer_downloads: HashSet::new(),
             current_party_id: None,
         };
         let value = json!({
