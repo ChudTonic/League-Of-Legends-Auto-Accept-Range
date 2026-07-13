@@ -31,7 +31,7 @@ function ytId(text) {
 }
 
 // Chud Originals — our own first-party packs, merged into the catalog at
-// serve time (the daily upstream source crawl overwrites catalog:v1, so these can't
+// serve time (the daily upstream crawl overwrites catalog:v1, so these can't
 // live in KV). Their files are uploaded to R2 at f/{id}.fantome, so the
 // existing /file path serves them and they're always "ready".
 const CURATED = [
@@ -237,6 +237,18 @@ async function trickleMirror(env, n) {
     if (bytes != null) count++;
   });
   if (count) console.log(`trickleMirror: mirrored ${count} file(s)`);
+  // Health canary: if we TRIED a healthy batch and mirrored NONE, the most
+  // likely cause is the upstream source changing its download URL format
+  // again (the resolver stops finding artifacts). Record it so it's loud, not
+  // silent — exposed on /meta as mirrorHealth and logged as an error.
+  if (todo.length >= 10) {
+    const stalled = count === 0;
+    if (stalled) console.error(`trickleMirror STALL: tried ${todo.length}, mirrored 0 — resolveDownload may be broken (upstream format change?)`);
+    await env.CATALOG.put(
+      "mirror:health",
+      JSON.stringify({ ts: new Date().toISOString(), tried: todo.length, mirrored: count, stalled }),
+    );
+  }
   return { mirrored: count, total: all.length, ready: done.size + count };
 }
 
@@ -269,7 +281,11 @@ async function resolveDownload(env, modId) {
   try { r = await fetch(u, { headers: { "User-Agent": UA } }); } catch (e) { return null; }
   if (!r.ok) return null;
   const text = await r.text();
-  const m = text.match(/https:\/\/[A-Za-z0-9._%/?=+-]*mod_release_artifacts[A-Za-z0-9._%/?=+-]*\.fantome[A-Za-z0-9._%/?=+-]*/);
+  // Match any upstream artifact URL ending in .fantome (with optional query).
+  // The source moved its storage path layout once already, so we no longer
+  // pin the path segment — just find the .fantome URL (incl. `&` for query
+  // strings). This survives future path changes without code edits.
+  const m = text.match(/https:\/\/[A-Za-z0-9._%/?=+&-]*\.fantome[A-Za-z0-9._%/?=+&-]*/);
   if (!m) return null;
   await env.CATALOG.put(cacheKey, m[0], { expirationTtl: 604800 });
   return m[0];
@@ -317,7 +333,7 @@ export default {
     ctx.waitUntil((async () => {
       const s = await crawlSpurt(env);
       if (s.idle || s.assembled != null) {
-        // upstream source confirmed our load is negligible, so mirror aggressively:
+        // The upstream source confirmed our load is negligible, so mirror aggressively:
         // BOTH files and thumbnails every tick, in parallel. This is a burst
         // that self-idles once the whole catalog is in R2 (it only fetches
         // what's missing), so the high rate costs nothing once caught up.
@@ -502,7 +518,9 @@ export default {
       try { progress = JSON.parse((await env.CATALOG.get("crawl:state")) || "null"); } catch (e) {}
       const base = meta ? JSON.parse(meta) : { count: 0 };
       const ready = await getMirrored(env);
-      return json({ ...base, ready: ready.size, crawlProgress: progress });
+      let mirrorHealth = null;
+      try { mirrorHealth = JSON.parse((await env.CATALOG.get("mirror:health")) || "null"); } catch (e) {}
+      return json({ ...base, ready: ready.size, crawlProgress: progress, mirrorHealth });
     }
 
     return json({ service: "chud-skins catalog", endpoints: ["/catalog", "/img/{key}", "/download/{modId}", "/meta"] });
