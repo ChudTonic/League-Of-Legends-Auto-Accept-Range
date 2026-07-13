@@ -1,6 +1,6 @@
 [package]
 name = "league-tools"
-version = "2.2.1"
+version = "2.3.0"
 description = "Chud — native League of Legends toolkit"
 authors = ["Joshua P Ivy"]
 edition = "2021"
