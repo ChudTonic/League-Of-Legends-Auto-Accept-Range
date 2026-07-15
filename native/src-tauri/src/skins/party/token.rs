@@ -3,10 +3,20 @@
 //! Wire layout is byte-exact with the Python original (and therefore with
 //! any peer still holding a Python-issued token): before compression, v2 is
 //! `>BIQ` (version: u8, timestamp: u32 big-endian, summoner_id: u64
-//! big-endian) followed by the 32-byte encryption key — 45 bytes total —
+//! big-endian) followed by the 32-byte room secret — 45 bytes total —
 //! zlib-compressed and urlsafe-base64 encoded with padding stripped. v1
 //! (legacy P2P) inserts a 2x u16 ip/port pair between summoner_id and the
-//! key; decode still accepts it for back-compat, encode never produces it.
+//! secret; decode still accepts it for back-compat, encode never produces it.
+//!
+//! IMPORTANT — the 32-byte `room_secret` is NOT an encryption key and NOTHING
+//! in this codebase encrypts party payloads with it. Its ONLY job is to make
+//! the relay room name unguessable: `relay::compute_room_key` does
+//! `sha256(host_id + room_secret)[:32]`, so a token holder and the host
+//! independently derive the same private room address. Party frames travel to
+//! the relay as plaintext JSON (protected only by TLS in transit and, as of
+//! P0-F, carrying an ephemeral id + display name + cosmetic skin pick — no
+//! summoner id); their integrity is guaranteed by ed25519 signatures
+//! (`party::sig`), not by any cipher here. See `docs/PRIVACY-PARTY.md`.
 //!
 //! The ONLY branded surface is the ASCII `"CHUD:"` prefix
 //! (`docs/SKINS_PORT.md` §1); the binary layout matches the upstream codec, so
@@ -39,7 +49,9 @@ pub struct TokenData {
     /// (see its doc comment) — this module's wire layout and field name are
     /// unchanged, only the caller-supplied value's meaning is.
     pub summoner_id: u64,
-    pub key: [u8; 32],
+    /// 32-byte room-derivation secret — hashed into the relay room name, never
+    /// used to encrypt anything (see this module's doc comment).
+    pub room_secret: [u8; 32],
 }
 
 impl TokenData {
@@ -77,12 +89,12 @@ impl std::error::Error for TokenError {}
 /// `PartyToken.encode` — `timestamp` is the token creation time (Unix
 /// seconds); the caller passes `SystemTime::now()` (see this module's doc
 /// comment on why the clock read isn't inlined here).
-pub fn encode_token(summoner_id: u64, key: &[u8; 32], timestamp: u32) -> String {
+pub fn encode_token(summoner_id: u64, room_secret: &[u8; 32], timestamp: u32) -> String {
     let mut data = Vec::with_capacity(13 + 32);
     data.push(TOKEN_VERSION);
     data.extend_from_slice(&timestamp.to_be_bytes());
     data.extend_from_slice(&summoner_id.to_be_bytes());
-    data.extend_from_slice(key);
+    data.extend_from_slice(room_secret);
 
     // zlib level 9, matching `zlib.compress(data, level=9)` — the compressed
     // bytes need not match Python byte-for-byte (different zlib builds can
@@ -114,46 +126,47 @@ pub fn decode_token(token_str: &str, now_unix: u64) -> Result<TokenData, TokenEr
     }
     let version = data[0];
 
-    let (timestamp, summoner_id, key) = match version {
+    let (timestamp, summoner_id, room_secret) = match version {
         1 => {
-            // Legacy v1: >BIQHH (version, timestamp, summoner_id, ip, port) + 32-byte key.
+            // Legacy v1: >BIQHH (version, timestamp, summoner_id, ip, port) + 32-byte secret.
             if data.len() < 57 {
                 return Err(TokenError::TooShort);
             }
             let timestamp = u32::from_be_bytes(data[1..5].try_into().unwrap());
             let summoner_id = u64::from_be_bytes(data[5..13].try_into().unwrap());
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&data[25..57]);
-            (timestamp, summoner_id, key)
+            let mut room_secret = [0u8; 32];
+            room_secret.copy_from_slice(&data[25..57]);
+            (timestamp, summoner_id, room_secret)
         }
         2 => {
-            // v2: >BIQ (version, timestamp, summoner_id) + 32-byte key.
+            // v2: >BIQ (version, timestamp, summoner_id) + 32-byte secret.
             if data.len() < 45 {
                 return Err(TokenError::TooShort);
             }
             let timestamp = u32::from_be_bytes(data[1..5].try_into().unwrap());
             let summoner_id = u64::from_be_bytes(data[5..13].try_into().unwrap());
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&data[13..45]);
-            (timestamp, summoner_id, key)
+            let mut room_secret = [0u8; 32];
+            room_secret.copy_from_slice(&data[13..45]);
+            (timestamp, summoner_id, room_secret)
         }
         other => return Err(TokenError::UnsupportedVersion(other)),
     };
 
-    let token = TokenData { version, timestamp, summoner_id, key };
+    let token = TokenData { version, timestamp, summoner_id, room_secret };
     if token.is_expired(now_unix) {
         return Err(TokenError::Expired);
     }
     Ok(token)
 }
 
-/// Generate a fresh 32-byte encryption key (ported from
-/// `create_token`'s `secrets.token_bytes(32)`).
-pub fn generate_key() -> [u8; 32] {
+/// Generate a fresh 32-byte room secret (ported from `create_token`'s
+/// `secrets.token_bytes(32)`). Used only to derive an unguessable relay room
+/// name — NOT an encryption key (see this module's doc comment).
+pub fn generate_room_secret() -> [u8; 32] {
     use rand::RngCore;
-    let mut key = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
-    key
+    let mut secret = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut secret);
+    secret
 }
 
 #[cfg(test)]
@@ -162,21 +175,21 @@ mod tests {
 
     #[test]
     fn encode_decode_round_trips() {
-        let key = [7u8; 32];
-        let token = encode_token(123456789, &key, 1_700_000_000);
+        let room_secret = [7u8; 32];
+        let token = encode_token(123456789, &room_secret, 1_700_000_000);
         assert!(token.starts_with(TOKEN_PREFIX));
 
         let decoded = decode_token(&token, 1_700_000_100).expect("decode should succeed");
         assert_eq!(decoded.version, TOKEN_VERSION);
         assert_eq!(decoded.timestamp, 1_700_000_000);
         assert_eq!(decoded.summoner_id, 123456789);
-        assert_eq!(decoded.key, key);
+        assert_eq!(decoded.room_secret, room_secret);
     }
 
     #[test]
     fn decode_rejects_expired_token() {
-        let key = [1u8; 32];
-        let token = encode_token(1, &key, 1_000_000_000);
+        let room_secret = [1u8; 32];
+        let token = encode_token(1, &room_secret, 1_000_000_000);
         // now_unix far past timestamp + TOKEN_EXPIRY_SECONDS.
         let err = decode_token(&token, 1_000_000_000 + TOKEN_EXPIRY_SECONDS + 1).unwrap_err();
         assert!(matches!(err, TokenError::Expired));
@@ -184,8 +197,8 @@ mod tests {
 
     #[test]
     fn decode_accepts_token_without_prefix() {
-        let key = [2u8; 32];
-        let token = encode_token(42, &key, 1_700_000_000);
+        let room_secret = [2u8; 32];
+        let token = encode_token(42, &room_secret, 1_700_000_000);
         let bare = token.strip_prefix(TOKEN_PREFIX).unwrap();
         let decoded = decode_token(bare, 1_700_000_000).unwrap();
         assert_eq!(decoded.summoner_id, 42);
@@ -205,7 +218,7 @@ mod tests {
         assert_eq!(decoded.timestamp, 1_700_000_000);
         assert_eq!(decoded.summoner_id, 123456789);
         let expected_key: Vec<u8> = (0u8..32).collect();
-        assert_eq!(decoded.key.to_vec(), expected_key);
+        assert_eq!(decoded.room_secret.to_vec(), expected_key);
     }
 
     /// Same cross-check for the legacy v1 layout — note `token_codec.py`'s
@@ -222,6 +235,6 @@ mod tests {
         assert_eq!(decoded.timestamp, 1_700_000_000);
         assert_eq!(decoded.summoner_id, 123456789);
         let expected_key: Vec<u8> = (0u8..32).collect();
-        assert_eq!(decoded.key.to_vec(), expected_key);
+        assert_eq!(decoded.room_secret.to_vec(), expected_key);
     }
 }

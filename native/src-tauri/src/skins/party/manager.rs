@@ -304,7 +304,7 @@ impl PartyManager {
         };
         let signing = Arc::new(SigningKey::generate(&mut OsRng));
 
-        let key = token::generate_key();
+        let key = token::generate_room_secret();
         let timestamp = unix_now() as u32;
         let token_str = token::encode_token(ephemeral_host_id, &key, timestamp);
 
@@ -411,7 +411,7 @@ impl PartyManager {
             return Err("You cannot add yourself".to_string());
         }
 
-        let target_room_key = relay::compute_room_key(peer_token.summoner_id, &peer_token.key);
+        let target_room_key = relay::compute_room_key(peer_token.summoner_id, &peer_token.room_secret);
         // Already connected to that exact room? Nothing to do. (The older
         // "is this peer already a member of OUR current room" identity check
         // is gone — v2's `RelayMember` carries no summoner id to match
