@@ -1,16 +1,13 @@
 //! Overlay/mod-tools process lifecycle — ported from
-//! `injection\overlay\process_manager.py` (`ProcessManager`). The Python
-//! original duplicated the "terminate, wait briefly, force-kill" escalation
-//! once for `kill_all_runoverlay_processes` and once for
-//! `kill_all_modtools_processes`; both are collapsed here onto one
-//! `kill_matching_modtools` helper (matching `docs/SKINS_PORT.md`'s
-//! instruction to de-duplicate it).
+//! `injection\overlay\process_manager.py` (`ProcessManager`). Python
+//! duplicated the "terminate, wait briefly, force-kill" escalation once for
+//! `kill_all_runoverlay_processes` and once for `kill_all_modtools_processes`;
+//! both collapse here onto one `kill_matching_modtools` helper.
 //!
-//! Windows note: there is no POSIX-style graceful `SIGTERM` here —
-//! `sysinfo::Process::kill` (and `std::process::Child::kill`) both resolve
-//! to `TerminateProcess` on this platform, same as psutil's `.terminate()`
-//! and `.kill()` did in the Python original. The "escalation" is therefore
-//! "ask, wait a beat, ask again" rather than a true signal upgrade.
+//! Windows note: there is no POSIX-style graceful `SIGTERM` — `sysinfo::Process::kill`
+//! (and `std::process::Child::kill`) both resolve to `TerminateProcess` on
+//! this platform, so the "escalation" is "ask, wait a beat, ask again"
+//! rather than a true signal upgrade.
 
 #![allow(dead_code)] // consumed by S3+ (injector wiring)
 
@@ -34,8 +31,7 @@ pub const PROCESS_ENUM_TIMEOUT_S: f64 = 2.0;
 
 /// The currently-running `runoverlay` child, shared between `overlay.rs`
 /// (which spawns it) and this module (which can be asked to stop it from
-/// elsewhere — ChampSelect cleanup, app shutdown). Mirrors
-/// `ProcessManager.current_overlay_process`.
+/// elsewhere — ChampSelect cleanup, app shutdown).
 pub type SharedOverlayProcess = Arc<Mutex<Option<Child>>>;
 
 pub fn new_shared_overlay_process() -> SharedOverlayProcess {
@@ -96,31 +92,23 @@ pub fn stop_overlay_process(shared: &SharedOverlayProcess) {
 }
 
 /// Kill all `mod-tools.exe` processes whose command line contains
-/// `"runoverlay"` (ChampSelect cleanup — ported from
-/// `ProcessManager.kill_all_runoverlay_processes`), then also stop our own
-/// tracked overlay child.
+/// `"runoverlay"` (ChampSelect cleanup), then also stop our own tracked overlay child.
 pub fn kill_all_runoverlay_processes(shared: &SharedOverlayProcess) {
     kill_matching_modtools(shared, true);
 }
 
 /// Kill every `mod-tools.exe` process regardless of command line
-/// (application shutdown — ported from
-/// `ProcessManager.kill_all_modtools_processes`), then also stop our own
-/// tracked overlay child.
+/// (application shutdown), then also stop our own tracked overlay child.
 pub fn kill_all_modtools_processes(shared: &SharedOverlayProcess) {
     kill_matching_modtools(shared, false);
 }
 
-/// OS-level kill of leaked `runoverlay` `mod-tools.exe` processes WITHOUT
-/// touching any `InjectionManager`/`SharedOverlayProcess` lock. This is the
-/// deadlock-safe path: a skin injection holds the manager's `inner` mutex for
-/// the WHOLE game (its overlay babysit loop blocks until `runoverlay` exits),
-/// so if `runoverlay` never self-exits, the normal
-/// `InjectionManager::kill_all_runoverlay_processes` — which locks `inner` to
-/// reach the injector — can never run. Killing by OS enumeration here makes the
-/// stuck babysit loop's `try_wait` observe the dead child, return, and release
-/// `inner` + the `injection_in_progress` flag. Used by
-/// `InjectionManager::reset_stuck_injection` on ChampSelect entry.
+/// OS-level kill of leaked `runoverlay` processes WITHOUT touching any
+/// `InjectionManager`/`SharedOverlayProcess` lock. Deadlock-safe path: an
+/// injection holds `inner` for the WHOLE game, so if `runoverlay` never
+/// self-exits, the normal (`inner`-locking) kill path can never run. Killing
+/// by OS enumeration makes the stuck babysit loop's `try_wait` observe the
+/// dead child and release `inner`. Used by `reset_stuck_injection`.
 pub fn kill_runoverlay_processes_os() {
     kill_matching_modtools_os(true);
 }

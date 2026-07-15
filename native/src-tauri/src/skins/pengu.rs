@@ -1,14 +1,13 @@
 //! Pengu Loader lifecycle management — ported from
 //! `utils\integration\pengu_loader.py`. Copies the bundled Pengu Loader
-//! payload into `%LOCALAPPDATA%\Chud\Pengu Loader` (via `paths::pengu_loader_dir`),
-//! preserving the user's `datastore` and per-plugin enable/disable choices
-//! across every sync, then drives its CLI (`--set-league-path`,
-//! `--force-activate`/`--force-deactivate`, `--restart-client`).
+//! payload into the runtime dir (`paths::pengu_loader_dir`), preserving the
+//! user's `datastore` and per-plugin enable/disable choices across every
+//! sync, then drives its CLI (`--set-league-path`, `--force-activate`/
+//! `--force-deactivate`, `--restart-client`).
 //!
-//! The Python original's `_resolve_pengu_dir` branched on PyInstaller frozen/dev mode; Tauri
-//! always runs from a real executable, so that branch collapses to the one
-//! "copy bundled -> writable runtime dir" path every time (same
-//! simplification `paths::assets_dir` already made).
+//! Python's `_resolve_pengu_dir` branched on PyInstaller frozen/dev mode;
+//! Tauri always runs from a real executable, so that collapses to one
+//! "copy bundled -> writable runtime dir" path every time.
 
 #![allow(dead_code)] // consumed by S5+ (game-flow wiring calls into this)
 
@@ -42,20 +41,17 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// (ported from `_IFEO_KEY`).
 const IFEO_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LeagueClientUx.exe";
 
-/// Resolved once per process (ported from the Python module-level constant
-/// `PENGU_DIR = _resolve_pengu_dir()`) — every call after the first reuses
-/// the already-synced runtime directory instead of re-copying the whole
-/// Pengu Loader payload on every activate/deactivate/set-path call.
+/// Resolved once per process — every call after the first reuses the
+/// already-synced runtime directory instead of re-copying the whole payload.
 static PENGU_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn pengu_dir() -> &'static Path {
     PENGU_DIR.get_or_init(resolve_pengu_dir)
 }
 
-/// Force the bundled→runtime Pengu sync on app startup, so newly-shipped
-/// plugins (added in an update) always reach the runtime plugins folder even
-/// when the user never re-activates Pengu. Idempotent (OnceLock) and preserves
-/// datastore + plugin enable/disable state. Called from `skins::init`.
+/// Force the bundled->runtime Pengu sync on app startup, so newly-shipped
+/// plugins reach the runtime plugins folder even without re-activating
+/// Pengu. Idempotent (OnceLock) and preserves datastore + plugin enable/disable state.
 pub fn ensure_synced() {
     let _ = pengu_dir();
 }
@@ -78,19 +74,16 @@ fn to_wide(s: &str) -> Vec<u16> {
 }
 
 // ---------------------------------------------------------------------------
-// Plugin enable/disable state preservation (ported verbatim from
-// pengu_loader.py's `_sanitize_plugin_entrypoints` /
-// `_snapshot_plugin_enable_state` / `_restore_plugin_enable_state`)
+// Plugin enable/disable state preservation
 // ---------------------------------------------------------------------------
 
 /// Ensure plugin enable/disable state survives the overlay sync.
 ///
-/// Background: disabling a plugin renames `index.js` -> `index.js_`. The
-/// sync below overlays the bundled Pengu Loader onto the runtime directory
-/// without deleting extra files, so a disabled plugin can end up with BOTH
-/// `index.js_` and a freshly-copied `index.js` — effectively re-enabling
-/// (or duplicating) the plugin on next launch. Rule: if `index.js_` exists,
-/// treat it as authoritative and park/remove any reintroduced `index.js`.
+/// Disabling a plugin renames `index.js` -> `index.js_`. The sync below
+/// overlays bundled files onto the runtime dir without deleting extras, so a
+/// disabled plugin can end up with BOTH files — effectively re-enabling it.
+/// Rule: if `index.js_` exists, treat it as authoritative and park/remove
+/// any reintroduced `index.js`.
 fn sanitize_plugin_entrypoints(pengu_dir: &Path) {
     let plugins_dir = pengu_dir.join("plugins");
     let Ok(entries) = std::fs::read_dir(&plugins_dir) else { return };
@@ -153,10 +146,8 @@ fn snapshot_plugin_enable_state(pengu_dir: &Path) -> (HashSet<String>, HashSet<S
 }
 
 /// After the overlay sync, restore the user's prior plugin enable/disable
-/// choices (ported from `_restore_plugin_enable_state`). Only `enabled` is
-/// actually consulted here — same as the Python original, whose `disabled`
-/// parameter goes unused too; disabled-state restoration is handled by
-/// `sanitize_plugin_entrypoints` below, not by reading the snapshot.
+/// choices. Only `enabled` is actually consulted — disabled-state
+/// restoration is handled by `sanitize_plugin_entrypoints` below instead.
 fn restore_plugin_enable_state(pengu_dir: &Path, enabled: &HashSet<String>, _disabled: &HashSet<String>) {
     let plugins_dir = pengu_dir.join("plugins");
 
@@ -204,10 +195,8 @@ fn copy_tree_preserving_datastore(src: &Path, dst: &Path) -> std::io::Result<()>
     }
 
     // Seed the datastore once for a brand-new runtime directory. Pengu
-    // Loader stores plugin/user settings there via `DataStore.*`;
-    // overwriting it on every app update would wipe user preferences (ported
-    // from the `bundled_datastore`/`runtime_datastore` seeding in
-    // `_resolve_pengu_dir`).
+    // Loader stores plugin/user settings there; overwriting it on every
+    // app update would wipe user preferences.
     let bundled_datastore = src.join("datastore");
     let runtime_datastore = dst.join("datastore");
     if !runtime_datastore.exists() && bundled_datastore.exists() {
@@ -219,8 +208,7 @@ fn copy_tree_preserving_datastore(src: &Path, dst: &Path) -> std::io::Result<()>
 
 /// Copy the bundled Pengu Loader payload into the writable runtime
 /// directory, preserving `datastore` and plugin enable/disable choices
-/// across the sync (ported from `_resolve_pengu_dir`'s frozen-mode branch —
-/// Chud has no unfrozen/dev-source-tree mode to fall back to).
+/// across the sync.
 fn resolve_pengu_dir() -> PathBuf {
     let bundled_dir = tools::pengu_loader_resource_dir();
     let runtime_dir = paths::pengu_loader_dir();
@@ -324,9 +312,7 @@ fn clear_active_flag() {
 
 /// Clean up the old Pengu Loader IFEO (Image File Execution Options)
 /// registry entry — older Pengu Loader versions used IFEO to inject into
-/// League, which can crash newer client versions (ported from
-/// `cleanup_old_pengu_ifeo`; equivalent to Pengu's own
-/// `irm https://pengu.lol/clean | iex` one-liner). Returns `true` if an
+/// League, which can crash newer client versions. Returns `true` if an
 /// entry was found and deleted.
 pub fn cleanup_old_pengu_ifeo() -> bool {
     let subkey = to_wide(IFEO_KEY);
@@ -367,10 +353,9 @@ pub fn set_league_path(league_path: &str) -> bool {
     run_cli(dir, &["--set-league-path", trimmed, "--silent"], &[0])
 }
 
-/// Outcome of `activate_on_start`, so the caller can tell the user whether the
-/// League client actually rebooted (Pengu's `d3d9.dll` hook only loads on a
-/// client restart; that restart hits the LCU and intermittently fails when the
-/// client is unreachable — a login screen, mid-transition, or stale lockfile).
+/// Outcome of `activate_on_start`, so the caller can tell the user whether
+/// League actually rebooted (Pengu's hook only loads on restart, which hits
+/// the LCU and can fail if it's unreachable).
 pub struct ActivateResult {
     /// Pengu's `--force-activate` succeeded (the hook is in place on disk).
     pub activated: bool,
@@ -456,10 +441,8 @@ pub fn cleanup_if_dirty() -> bool {
     deactivated
 }
 
-/// Whether Pengu Loader is currently marked active — i.e. the flag file
+/// Whether Pengu Loader is currently marked active — the flag file
 /// `activate_on_start` writes and `deactivate_on_exit` clears still exists.
-/// Used by the Skins control panel (S9) to show real activation status
-/// without shelling out to the CLI.
 pub fn is_active() -> bool {
     active_flag_path().exists()
 }

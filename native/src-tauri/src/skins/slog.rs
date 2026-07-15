@@ -1,9 +1,8 @@
 //! Skins subsystem file logger. Never-blocks-the-caller design, ported from
-//! `utils\core\logging.py`'s queue handler — but NOT its full three-tier
-//! customer/verbose/debug complexity, since S1 has no config surface for log
-//! modes yet. One bounded channel + one writer thread; `try_send` means a
-//! caller never stalls even if the writer is behind — overflow is silently
-//! dropped, matching the Python contract ("never block the calling thread").
+//! `utils\core\logging.py`'s queue handler (minus its three-tier
+//! customer/verbose/debug complexity — no config surface for log modes
+//! yet). One bounded channel + one writer thread; `try_send` means a caller
+//! never stalls even if the writer is behind — overflow is silently dropped.
 
 #![allow(dead_code)] // consumed by S2+
 #![allow(unused_macros)] // info!/warn!/error! land their first call sites in S2+

@@ -1,9 +1,7 @@
-//! Keyboard injection for Auto-Range / Camera Assist via Win32 `SendInput`,
-//! sending both the scancode and virtual-key forms of every transition. The
-//! live-tested Python app converged on exactly this combination (its "hybrid"
-//! backend) — DirectX titles read scancodes, other paths read VKs, and sending
-//! both means the game sees the key regardless. Operates openly — no hooking
-//! or evasion.
+//! Keyboard injection for Auto-Range / Camera Assist via Win32 `SendInput`, sending
+//! both scancode and virtual-key forms of every transition: DirectX titles read
+//! scancodes, other paths read VKs, so sending both guarantees the game sees the
+//! key. Operates openly — no hooking or evasion.
 
 #[cfg(windows)]
 mod imp {
@@ -23,10 +21,9 @@ mod imp {
         })
     }
 
-    /// Resolve a config key name to (virtual key, scancode). Returns `None`
-    /// when the name is neither a known named key nor a single resolvable
-    /// character — callers treat that as a disarm (see `Injector::new`)
-    /// rather than silently remapping to some default key.
+    /// Resolve a config key name to (virtual key, scancode). `None` when the name
+    /// is neither a known named key nor a resolvable character — callers treat
+    /// that as a disarm (see `Injector::new`), never a silent default remap.
     pub fn resolve(name: &str) -> Option<(u16, u16)> {
         let normalized = name.trim().to_lowercase();
         let vk = named_vk(&normalized).or_else(|| {
@@ -99,9 +96,8 @@ impl Injector {
         }
     }
 
-    /// Unconditional key-up, regardless of tracked hold state — used on app
-    /// exit so a key can never stay stuck if the process ends before a tool
-    /// loop's own release runs. A spurious key-up is harmless.
+    /// Unconditional key-up regardless of tracked hold state, used on app exit so
+    /// a key can't stay stuck if the process ends before a tool loop releases it.
     pub fn force_release(&mut self) {
         imp::transition(self.vk, self.scan, true);
         self.holding = false;

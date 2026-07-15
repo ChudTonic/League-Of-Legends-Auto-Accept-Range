@@ -1,18 +1,16 @@
 //! LCU skin-feature surface: JSON types, the champ-select cell/lock pure
 //! functions, the per-champion skin scraper/cache, skin selection, game-mode
 //! detection, and Swiftplay lobby digging. Ported from `lcu/data/*.py`,
-//! `lcu/features/*.py`, and `lcu/core/lcu_api.py`'s PATCH/PUT contract (S2).
+//! `lcu/features/*.py`, and `lcu/core/lcu_api.py`'s PATCH/PUT contract.
 //!
-//! Builds on `crate::lcu` (auth + the generic `get_json`/`get_phase` GETs) —
-//! this module only adds the PATCH/PUT calls `lcu.rs` doesn't have and the
-//! typed shapes the skins subsystem needs. Every LCU JSON struct field is
+//! Builds on `crate::lcu` (auth + generic GETs) — this module only adds the
+//! PATCH/PUT calls `lcu.rs` doesn't have. Every LCU JSON struct field is
 //! `Option` (+ `#[serde(default)]`): the client's schemas vary by patch and a
 //! missing field must never fail the whole deserialize.
 //!
 //! Every endpoint helper reads/writes through `shared_cache()` (a per-path
-//! TTL cache ported from `lcu/core/lcu_api.py::LCUAPI`) rather than calling
-//! `lcu::get_json` directly, so bursty polls from independent callers
-//! de-dupe into one request — see the "Cached GET layer" section below.
+//! TTL cache) rather than calling `lcu::get_json` directly, so bursty polls
+//! from independent callers de-dupe into one request.
 
 #![allow(dead_code)]
 
@@ -52,11 +50,10 @@ fn is_swiftplay_mode_str(game_mode: &str) -> bool {
 // ---------------------------------------------------------------------
 // League install/game directory discovery — feeds
 // `injection::InjectionManager::set_game_dir`, which `mkoverlay`'s
-// `--game:<path>` argument needs (`injection/game/game_detector.py` was never
-// ported as its own module; this is that lookup). Mirrors `lcu::find_auth`'s
-// process scan (same running `LeagueClientUx.exe`, same
-// `--install-directory=` cmdline fallback) rather than reusing it directly —
-// `lcu.rs` only exposes lockfile auth, not the bare install directory.
+// `--game:<path>` argument needs. Mirrors `lcu::find_auth`'s process scan
+// (same `LeagueClientUx.exe`, same `--install-directory=` fallback) rather
+// than reusing it directly — `lcu.rs` only exposes lockfile auth, not the
+// bare install directory.
 // ---------------------------------------------------------------------
 
 fn install_dir_from_cmd(cmd: &[OsString]) -> Option<PathBuf> {
@@ -97,12 +94,10 @@ pub fn resolve_game_dir() -> Option<PathBuf> {
 
 // ---------------------------------------------------------------------
 // Cached GET layer — `lcu/core/lcu_api.py::LCUAPI`. A per-path TTL cache so
-// bursty polls from independent callers hitting the same endpoint in the
-// same tick share one request, exactly like the Python original's single
-// `LCUAPI` instance shared by the whole app. CONTRACT: HTTP 404/405 (and any
-// other failure) collapse to `None` — "no data", not an error; callers
-// pattern-match on `None` rather than treating it as a fetch failure (same
-// contract `lcu::get_json` already has — this layer only adds de-dup).
+// bursty polls hitting the same endpoint in the same tick share one
+// request. CONTRACT: HTTP 404/405 (and any other failure) collapse to
+// `None` — "no data", not an error; callers pattern-match on `None` rather
+// than treating it as a fetch failure (same contract as `lcu::get_json`).
 // ---------------------------------------------------------------------
 
 /// Default GET cache TTL — de-dupes bursty polls (`config.py::LCU_GET_CACHE_TTL_S`).
@@ -185,8 +180,7 @@ static SHARED_CACHE: OnceLock<LcuCache> = OnceLock::new();
 
 /// Process-wide cache instance. Every endpoint helper below reads/writes
 /// through this instead of calling `lcu::get_json` directly, so callers
-/// never have to thread a cache handle through every signature — mirrors
-/// the single `LCU` facade object the whole Python app shared.
+/// never have to thread a cache handle through every signature.
 pub fn shared_cache() -> &'static LcuCache {
     SHARED_CACHE.get_or_init(LcuCache::new)
 }
@@ -418,11 +412,9 @@ impl ChampionSkinCache {
 }
 
 /// Scrape all skins for `champion_id`, trying the game-data endpoint first
-/// and falling back to the scouting-inventory endpoint (`skin_scraper.py`'s
-/// two-endpoint fallback). Callers own the "already cached?" check
-/// (`ChampionSkinCache::is_loaded_for_champion`) before calling this —
-/// unlike the Python original, which held the cache internally, this is a
-/// pure fetch that always returns a fresh cache.
+/// and falling back to the scouting-inventory endpoint. Callers own the
+/// "already cached?" check (`ChampionSkinCache::is_loaded_for_champion`) —
+/// unlike Python, which held the cache internally, this always returns a fresh cache.
 pub async fn scrape_champion_skins(
     client: &reqwest::Client,
     auth: &Auth,
@@ -497,9 +489,8 @@ pub fn build_skin_cache(champ: ChampionData, champion_id: i64) -> ChampionSkinCa
 
 /// The League client sometimes appends a chroma colour as a locale-specific
 /// suffix — Portuguese `"SkinName (Renegado)"`, Russian `"SkinName – ''Пылкость''"`.
-/// Ported literally from `skin_scraper.py::find_skin_by_text`: real skin
-/// names can also use parentheses (Russian prestige skins), so this is only
-/// ever tried as an ALTERNATE candidate, never a destructive rewrite.
+/// Real skin names can also use parentheses (Russian prestige skins), so
+/// this is only ever tried as an ALTERNATE candidate, never a destructive rewrite.
 fn locale_chroma_suffix_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\s*(?:\([^)]*\)|–\s*'{0,2}[^']+'{0,2})\s*$").unwrap())
@@ -716,9 +707,7 @@ pub async fn detect_game_mode(client: &reqwest::Client, auth: &Auth) -> GameMode
 
 async fn patch_json(client: &reqwest::Client, auth: &Auth, path: &str, body: Value) -> Option<reqwest::StatusCode> {
     // A successful PATCH mutates server state the cache may be holding stale
-    // (e.g. the champ-select session's `myTeam[].selectedSkinId`) — drop it
-    // and its ancestors so the next GET refetches (`LCUAPI.patch`'s
-    // `self.invalidate(path)` before the request).
+    // (e.g. `myTeam[].selectedSkinId`) — drop it and its ancestors so the next GET refetches.
     shared_cache().invalidate(path);
     let resp = client
         .patch(format!("{}{}", auth.base_url, path))
@@ -791,10 +780,9 @@ fn is_swiftplay_lobby_data(data: &Value, already_swiftplay: bool) -> bool {
     already_swiftplay
 }
 
-/// The current lobby's `partyId` (a GUID shared identically by every member of
-/// the lobby), or `None` when not in a lobby. This is the anchor for
-/// auto-party: all Chud users in the same lobby derive the same relay room from
-/// it, so they converge automatically with no token exchange.
+/// The current lobby's `partyId` (a GUID shared by every member), or `None`
+/// when not in a lobby. Anchor for auto-party: all Chud users in the same
+/// lobby derive the same relay room from it, converging with no token exchange.
 pub async fn get_lobby_party_id(client: &reqwest::Client, auth: &Auth) -> Option<String> {
     let lobby = shared_cache().get(client, auth, "/lol-lobby/v2/lobby", DEFAULT_CACHE_TTL).await?;
     lobby.get("partyId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
@@ -1118,11 +1106,9 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // LCU replay: drive the real skin-name resolution pipeline against a
-    // champion payload captured verbatim from a live client
-    // (`/lol-game-data/assets/v1/champions/360.json`, Samira). This is the
-    // headless regression guard for the exact bug that hit a real user — the
-    // client reports a skin by its localized *display name*, and we must
-    // resolve it back to the right skin id before injection.
+    // champion payload captured verbatim from a live client (Samira). This
+    // is the regression guard for the bug where the client reports a skin
+    // by its localized *display name*, which must resolve to the right ID.
     // ---------------------------------------------------------------------
     const SAMIRA_FIXTURE: &str = include_str!("test_fixtures/champion_360_samira.json");
 

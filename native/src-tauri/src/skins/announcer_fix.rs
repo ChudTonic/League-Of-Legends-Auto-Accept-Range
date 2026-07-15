@@ -1,26 +1,17 @@
 //! Auto-fix downloaded announcer packs so they work on every current
-//! map/mode — the in-app port of `tools/retarget-announcer.py` (see that
-//! file for the full background), run at Library download time so packs are
-//! fixed once on disk instead of during a live champ select.
+//! map/mode — in-app port of `tools/retarget-announcer.py`, run at Library
+//! download time so packs are fixed once on disk.
 //!
-//! Community announcer packs replace the global female announcer banks
-//! (`announcer_global_female1_vo_audio.wpk` + `_vo_events.bnk`) but almost
-//! always target only Summoner's Rift (Map11) — and often ship the banks
-//! inside a prebuilt full-map `.wad.client` member, which trips cslol
-//! mkoverlay's fuzzy WAD matching into a multi-GB map rebuild. This rewrite
-//! delivers the bank pair as loose WAD-folder entries targeting exactly the
-//! small per-language WADs the banks live in:
+//! Community packs replace the global female announcer banks
+//! (`announcer_global_female1_vo_audio.wpk`/`_vo_events.bnk`) but usually
+//! target only Summoner's Rift, often via a prebuilt full-map `.wad.client`
+//! member that trips cslol mkoverlay's fuzzy matching into a multi-GB
+//! rebuild. Fix: deliver the bank pair as loose WAD entries in the small
+//! per-language WADs Map11 (SR), Map12 (ARAM, incl. the "Bloom" map-skin
+//! slot which re-binds the same events), and Map21 (Nexus Blitz).
 //!
-//!   Map11.en_US.wad  (Summoner's Rift)
-//!   Map12.en_US.wad  (ARAM — classic Howling Abyss + global slot on variants)
-//!   Map21.en_US.wad  (Nexus Blitz)
-//!   + the ARAM "Bloom" map-skin announcer slot (`announcer_map12_bloom_vo_*`)
-//!     — the variant bank re-binds the standard announcement events, so
-//!     without this the pack is silently out-voiced on Bloom.
-//!
-//! The "Crepe" ARAM variant is deliberately left vanilla: its Wwise event
-//! set is fully disjoint from the global announcer's, so replacing its bank
-//! would mute that announcer entirely rather than reskin it.
+//! "Crepe" ARAM is left vanilla — its Wwise events are disjoint from the
+//! global announcer's, so replacing its bank would mute it, not reskin it.
 
 use std::io::{Cursor, Read, Write};
 
@@ -36,13 +27,11 @@ const TARGET_WADS: [&str; 3] = ["Map11.en_US.wad", "Map12.en_US.wad", "Map21.en_
 const BLOOM_AUDIO: &str = "announcer_map12_bloom_vo_audio.wpk";
 const BLOOM_EVENTS: &str = "announcer_map12_bloom_vo_events.bnk";
 
-/// Rewrite a downloaded announcer `.fantome`/`.zip` so its global-announcer
-/// banks cover SR, ARAM (classic + Bloom variant), and Nexus Blitz.
+/// Rewrite a downloaded announcer pack so its global-announcer banks cover
+/// SR, ARAM (classic + Bloom), and Nexus Blitz.
 ///
-/// Returns `Some(rewritten archive bytes)` when the pack contains the global
-/// bank pair, `None` when it doesn't (not a recognizable global-announcer
-/// pack — caller keeps the original bytes) or on any read error (a malformed
-/// archive is left untouched rather than half-converted).
+/// Returns `None` if the pack isn't a recognizable global-announcer pack or
+/// on any read error — caller keeps the original bytes rather than a half-converted archive.
 pub fn retarget_announcer_pack(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut archive = match ZipArchive::new(Cursor::new(bytes)) {
         Ok(a) => a,
@@ -72,9 +61,8 @@ pub fn retarget_announcer_pack(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
     let opts = SimpleFileOptions::default();
 
-    // Preserve everything outside WAD/ (META, previews...); every WAD entry
-    // is replaced by the retargeted set below — this also drops prebuilt
-    // `*.wad.client` file members (the multi-GB rebuild trap).
+    // Preserve everything outside WAD/ (META, previews...) — WAD entries are
+    // replaced below, which also drops prebuilt `*.wad.client` members.
     for name in &member_names {
         if name.starts_with("WAD/") || name.ends_with('/') {
             continue;

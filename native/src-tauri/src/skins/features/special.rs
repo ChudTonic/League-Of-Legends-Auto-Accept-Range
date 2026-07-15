@@ -1,11 +1,9 @@
 //! Single source of truth for League's "forms"/HOL-chroma special cases —
-//! consolidates the three copies duplicated in the Python original across
-//! `ui\chroma\special_cases.py`, `injection\mods\zip_resolver.py`, and
-//! `ui\handlers\skin_display_handler.py`. These are champions whose
-//! alternate skin states are exposed to players as chroma-like picks but
-//! aren't real LCU chromas (either fake UI-only IDs, like Elementalist Lux's
-//! 99991-99999, or real skin IDs that the LCU treats as siblings rather than
-//! chromas of their base).
+//! consolidates three duplicated Python copies (`special_cases.py`,
+//! `zip_resolver.py`, `skin_display_handler.py`). These are champions whose
+//! alternate skin states show as chroma-like picks but aren't real LCU
+//! chromas (fake UI-only IDs like Elementalist Lux's 99991-99999, or real
+//! skin IDs the LCU treats as siblings rather than chromas of their base).
 
 #![allow(dead_code)] // consumed by S4+ (chroma panel, injection trigger)
 
@@ -17,9 +15,8 @@ pub struct FormSkin {
     pub base_id: i64,
     pub champion: &'static str,
     pub display: &'static str,
-    /// Literal relative zip path from `zip_resolver.py`'s rglob targets.
-    /// Empty for entries zip_resolver.py resolves generically by chroma ID
-    /// instead of a literal path (the two Risen Legend HOL chromas).
+    /// Literal relative zip path. Empty for entries resolved generically by
+    /// chroma ID instead (the two Risen Legend HOL chromas).
     pub zip_rel: &'static str,
 }
 
@@ -59,8 +56,7 @@ pub const FORMS: &[FormSkin] = &[
     FormSkin { fake_id: 234999, base_id: 234043, champion: "Viego", display: "Form 7", zip_rel: "Viego/Forms/Viego Form 7.zip" },
 
     // Risen Legend Kai'Sa HOL chroma — base 145070, real ID 145071.
-    // zip_resolver.py has no literal-path branch for this; it falls through
-    // to the generic champion/skin/chroma directory scan by ID.
+    // Falls through to the generic champion/skin/chroma directory scan by ID.
     FormSkin { fake_id: 145071, base_id: 145070, champion: "Kai'Sa", display: "Immortalized Legend", zip_rel: "" },
 
     // Risen Legend Ahri HOL chromas — base 103085, real IDs 103086/103087.

@@ -1,27 +1,19 @@
 //! Injection decision engine — ported from `threads/handlers/injection_trigger.py`
-//! (`InjectionTrigger`), the densest module in the Python original
-//! (~1350 lines). Ported here: the mod-selection priority (custom skin mod >
-//! owned skin/chroma LCU force > unowned-skin ZIP extraction > map/font/
-//! announcer/other mods only), historic auto-selection of a previously-used
-//! custom mod / category mod (so the user doesn't have to reopen the Custom
-//! Mods UI every game), the owned/base-skin LCU force-and-verify dance
-//! (action-based PATCH falling back to `my-selection`), and the base-skin
+//! (`InjectionTrigger`), the densest module in the Python original (~1350
+//! lines). Covers: mod-selection priority (custom skin mod > owned
+//! skin/chroma LCU force > unowned-skin ZIP extraction > map/font/announcer/
+//! other mods only), historic auto-selection of a previously-used custom mod
+//! / category mod, the owned/base-skin LCU force-and-verify dance
+//! (action-based PATCH falling back to `my-selection`), and base-skin
 //! confirmation telemetry (`injection::base_skin_tracker`).
 //!
-//! RECONCILED (was "FLAGGED FOR THE LEAD"): Python's `_inject_custom_mod` ran
-//! its own clean+extract+`OverlayManager.mk_run_overlay` sequence directly
-//! against `SkinInjector.overlay_manager`, bypassing `SkinInjector.inject_skin`
-//! entirely. S3's Rust port only exposes `InjectionManager::
-//! inject_skin_immediately(skin_name, ..., extra_mod_names)`, which ALWAYS
-//! resolves+extracts `skin_name` as the primary mod via `SkinInjector::
-//! inject_skin` — and that function used to call `storage::clean_mods_dir`
-//! UNCONDITIONALLY before extracting its primary skin, wiping any
-//! `extra_mod_names` folders this module had just pre-extracted into
-//! `mods_dir`. Fixed per `injector.rs::inject_skin`'s "CLEAN ORDERING
-//! CONTRACT" doc comment: `inject_skin` now only cleans when it has no
-//! extras to preserve, so `run_custom_mod_injection` below cleans `mods_dir`
-//! itself BEFORE extracting the custom mod / category mods (see the
-//! `storage::clean_mods_dir` call at its top) — the union of primary +
+//! `InjectionManager::inject_skin_immediately` ALWAYS resolves+extracts
+//! `skin_name` as the primary mod via `SkinInjector::inject_skin`, which used
+//! to `clean_mods_dir` UNCONDITIONALLY, wiping any `extra_mod_names` this
+//! module had just pre-extracted. Fixed per `injector.rs::inject_skin`'s
+//! CLEAN ORDERING CONTRACT: `inject_skin` now only cleans when it has no
+//! extras to preserve, so `run_custom_mod_injection` cleans `mods_dir` itself
+//! BEFORE extracting the custom mod / category mods — the union of primary +
 //! extras now survives into the overlay.
 
 #![allow(dead_code)] // consumed by ticker.rs; S9 troubleshooting UI
@@ -57,11 +49,9 @@ const LOG_SEPARATOR_WIDTH: usize = 80;
 /// `ticker::resolve_injection_name`.
 pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id: u64, name: String, champion_name: String) {
     let app_state = app.state::<Arc<AppState>>().inner().clone();
-    // P0-A safety gate at the pipeline entry. This replaces the old
-    // `injection_blocked` atomic check (ranked-only, and only maintained
-    // while Auto-Range happened to be running) with the full policy:
-    // master switch, versioned consent, LCU reachability, phase, and
-    // ranked/unknown queue — all evaluated from the always-on monitor.
+    // P0-A safety gate at the pipeline entry: full policy check (master
+    // switch, versioned consent, LCU reachability, phase, ranked/unknown
+    // queue) from the always-on monitor.
     if policy_denied(&app, InjectionOp::Build).is_some() {
         log_warn!("[INJECT] Injection blocked by safety policy - skipping trigger for {name}");
         return;
@@ -77,10 +67,9 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     // here so each injection path can fold the peer mods in.
     let party_mgr = app_state.skins_party.lock_safe().clone();
 
-    // Resolve the League "Game" directory lazily and set it every trigger
-    // (cheap, and the install dir can change between client launches) —
-    // `mkoverlay`'s `--game:<path>` is unset without it, making injection a
-    // silent no-op.
+    // Resolve the League "Game" directory and set it every trigger (cheap,
+    // can change between launches) — without it `mkoverlay`'s `--game:<path>`
+    // is unset, making injection a silent no-op.
     let Some(game_dir) = lcu_ext::resolve_game_dir() else {
         log_warn!("[INJECT] Could not resolve League game directory (client not running?) - skipping trigger for {name}");
         return;
@@ -94,15 +83,13 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         shared.last_hover_written = true;
     }
 
-    // No own skin selected (this player kept their default / didn't pick one).
-    // We still owe the overlay any connected party peers' skins AND any selected
-    // category mods (map/font/announcer). An empty name used to abort the whole
-    // trigger, silently dropping teammates' skins (the ARAM "she didn't pick, so
-    // she saw nobody's skin" bug) and category mods. Route through
-    // `run_custom_mod_injection` with `base_skin_name: None`: it stages party +
-    // category mods and injects them mods-only (no primary skin), and logs a
-    // clean skip if there's nothing to inject. The ranked kill-switch above
-    // still applies.
+    // No own skin selected. We still owe the overlay any connected party
+    // peers' skins AND selected category mods — an empty name used to abort
+    // the whole trigger, silently dropping teammates' skins (the ARAM
+    // "she didn't pick, so she saw nobody's skin" bug). Route through
+    // `run_custom_mod_injection` with `base_skin_name: None`: stages party +
+    // category mods and injects mods-only, logging a clean skip if there's
+    // nothing to inject.
     if name.is_empty() {
         let (selected_custom_mod, category_mods, champ_id) = {
             let shared = skins.shared.lock_safe();
@@ -148,11 +135,10 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     };
 
     // A custom mod selected for a DIFFERENT champion is stale — the user
-    // picked it, then re-picked/swapped champions without reopening the
-    // Custom Mods UI. Injecting it anyway forced the wrong champion's mod
-    // into the overlay (observed: Selena S.T.U.N Ahri injected into an
-    // Akshan game — a 31s multi-champion build + a crash). Clear it and
-    // fall through to the normal skin path.
+    // re-picked/swapped champions without reopening the Custom Mods UI.
+    // Injecting it anyway forced the wrong champion's mod into the overlay
+    // (observed: a 31s multi-champion build + a crash). Clear it and fall
+    // through to the normal skin path.
     let selected_custom_mod = drop_stale_custom_mod(&skins, bridge.as_ref(), selected_custom_mod, champ_id);
 
     log_trigger_summary(ticker_id, &name, selected_custom_mod.as_ref(), &category_mods);
@@ -164,14 +150,12 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
 
     if let Some(custom_mod) = &selected_custom_mod {
         let target_skin_id = custom_mod.skin_id;
-        // A base skin (`skin_id % 1000 == 0`) is always "owned" — everyone has
-        // it and its assets are already in the game, so there's NO downloadable
-        // base-skin ZIP to fetch. Riot's inventory only lists purchased skins,
-        // so without this a library custom mod (which targets the base slot
-        // `champ*1000`) is treated as unowned and dies looking for a base-skin
-        // ZIP. Treating it as owned routes it to the mods-only overlay (no ZIP);
-        // `run_custom_mod_injection` still force-selects the base skin so the
-        // game loads the assets the mod overrides.
+        // A base skin (`skin_id % 1000 == 0`) is always "owned" — its assets
+        // are already in the game, no downloadable ZIP exists. Without this,
+        // a library custom mod targeting the base slot is treated as unowned
+        // and dies looking for a base-skin ZIP. Treating it as owned routes
+        // it to the mods-only overlay; `run_custom_mod_injection` still
+        // force-selects the base skin so the game loads the assets the mod overrides.
         let target_is_base = target_skin_id % 1000 == 0;
         let is_owned = target_is_base || owned_skin_ids.contains(&target_skin_id);
         let base_skin_name = if is_owned { None } else { Some(name.clone()) };
@@ -237,12 +221,11 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     inject_unowned_skin(app, skins, client, auth, injection, bridge, name, champion_name, champ_id, local_cell_id, random_mode_active, party_folders).await;
 }
 
-/// Clean the mods dir and (re)stage every connected party peer's skin into it,
-/// returning their folder names. Party mods must be staged AFTER the mods-dir
-/// clean or they'd be wiped, so the owned/unowned paths (which otherwise let
-/// the injector do the clean) call this and pass the folders as
-/// `extra_mod_names` — the injector then skips its own clean and keeps them.
-/// Returns empty (and does NOT clean) when party mode is off or has no peers.
+/// Clean the mods dir and (re)stage every connected party peer's skin into
+/// it, returning their folder names. Staged AFTER the clean so they aren't
+/// wiped; the owned/unowned paths pass the folders as `extra_mod_names` so
+/// the injector skips its own clean. Returns empty (no clean) when party
+/// mode is off or has no peers.
 async fn stage_party_mods(party_mgr: &Option<Arc<crate::skins::party::manager::PartyManager>>) -> Vec<String> {
     let Some(pm) = party_mgr else { return Vec::new() };
     if pm.get_party_skins().await.is_empty() {
@@ -361,10 +344,8 @@ fn relative_path_of(path: &Path, root: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
-/// Ported from `injection_trigger.py`'s `auto_select_historic_mod` closure,
-/// called for map/font/announcer + the six "other" category buckets
-/// (`features::historic::MOD_HISTORIC_CATEGORIES`, minus map/font/announcer
-/// which have their own single-slot fields on `ModHistoric`).
+/// Auto-selects historic mods for map/font/announcer + the six "other"
+/// category buckets (`features::historic::MOD_HISTORIC_CATEGORIES`).
 fn auto_select_historic_category_mods(skins: &Arc<SkinsState>) {
     let mod_storage = ModStorageService::new(paths::mods_dir());
     let historic_mods = historic::load_mod_historic();
@@ -488,12 +469,10 @@ async fn run_custom_mod_injection(
 ) {
     let mods_dir = paths::injection_mods_dir();
     let cache_dir = paths::injection_extract_cache_dir();
-    // Clean BEFORE any extraction (custom mod, category mods, or the primary
-    // `inject_skin_immediately` resolves below) so the mods dir ends up with
-    // the UNION of everything this overlay needs — `SkinInjector::
-    // inject_skin` itself skips its own clean once it sees `extra_names` is
-    // non-empty (see its "CLEAN ORDERING CONTRACT" doc comment), so this is
-    // the one clean that runs for this whole overlay.
+    // Clean BEFORE any extraction so the mods dir ends up with the UNION of
+    // everything this overlay needs — `SkinInjector::inject_skin` skips its
+    // own clean once it sees `extra_names` is non-empty (CLEAN ORDERING
+    // CONTRACT), so this is the one clean for this whole overlay.
     storage::clean_mods_dir(&mods_dir);
     let mut extra_names = Vec::new();
     let mut labels = Vec::new();
@@ -550,13 +529,11 @@ async fn run_custom_mod_injection(
 
     let champion_id = if custom_mod.champion_id != 0 { Some(custom_mod.champion_id) } else { None };
 
-    // Force the champion's base skin via the LCU when the overlay's assets are
-    // keyed to it: the unowned path (base ZIP + mod), OR a real custom skin mod
-    // that targets the base skin itself (the user may have a different skin
-    // selected in champ select, so we must move them to base for the mod to
-    // show). Scoped to `has_custom_skin_folder` so the category-mods-only
-    // `dummy` selection (whose skin_id can be a base value) doesn't force a base
-    // skin when the user only added a map/font/announcer.
+    // Force the champion's base skin via the LCU when the overlay's assets
+    // are keyed to it: the unowned path, OR a real custom skin mod targeting
+    // the base skin itself. Scoped to `has_custom_skin_folder` so the
+    // category-mods-only `dummy` selection doesn't force a base skin when
+    // the user only added a map/font/announcer.
     let target_is_base_custom_skin = has_custom_skin_folder && custom_mod.skin_id % 1000 == 0;
     if base_skin_name.is_some() || target_is_base_custom_skin {
         if let (Some(cid), Some(auth)) = (champion_id, lcu::cached_auth()) {
@@ -587,10 +564,9 @@ async fn run_custom_mod_injection(
     let injection = injection.clone();
     let ticker_champion_name = champion_name;
     tauri::async_runtime::spawn_blocking(move || {
-        // With a base skin -> normal inject (it resolves + extracts the primary
-        // and folds in `extra_names`). WITHOUT one (party and/or category mods
-        // only) -> the mods-only overlay path: routing pure extras through
-        // `inject_skin_immediately` with a `skin_0` placeholder would trip its
+        // With a base skin -> normal inject (resolves + extracts primary,
+        // folds in `extra_names`). Without one -> mods-only overlay path:
+        // routing pure extras through a `skin_0` placeholder would trip the
         // base-skin short-circuit and silently drop every extra mod.
         let ok = match &base_skin_name {
             Some(primary) => injection.inject_skin_immediately(primary, None, Some(&ticker_champion_name), champion_id, &extra_names),
@@ -805,9 +781,8 @@ async fn force_owned_skin(
     injection.resume_if_suspended();
 }
 
-/// `InjectionTrigger._force_base_skin` (minus the Qt-era UI-hide calls — S9/JS
-/// territory now; `broadcast_skip_base_skin` replaces
-/// `state.ui_skin_thread._broadcast_skip_base_skin()`).
+/// `InjectionTrigger._force_base_skin` (minus the Qt-era UI-hide calls;
+/// `broadcast_skip_base_skin` replaces those now).
 async fn force_base_skin(
     client: &reqwest::Client,
     auth: &Auth,
@@ -848,14 +823,11 @@ async fn force_base_skin(
     }
 }
 
-/// Ported from `InjectionTrigger`'s local `game_ended_callback` closure —
-/// Python threaded it into `inject_skin_immediately(stop_callback=...)` so
-/// the overlay babysit loop could bail once the game had been InProgress and
-/// then ended. `InjectionManager::inject_skin_immediately` (S3, out of this
-/// milestone's file scope) has no such callback parameter, so this achieves
-/// a similar effect from OUTSIDE via the existing public
-/// `kill_all_runoverlay_processes` sweep instead of a callback threaded
-/// through the blocking call.
+/// Python threaded a `game_ended_callback` into `inject_skin_immediately`
+/// so the overlay babysit loop could bail once the game had been InProgress
+/// and then ended. `InjectionManager` has no such callback parameter, so
+/// this achieves the same effect from OUTSIDE via the public
+/// `kill_all_runoverlay_processes` sweep.
 fn spawn_game_end_watcher(skins: Arc<SkinsState>, injection: Arc<InjectionManager>) {
     tauri::async_runtime::spawn(async move {
         let mut has_been_in_progress = false;
@@ -867,11 +839,10 @@ fn spawn_game_end_watcher(skins: Arc<SkinsState>, injection: Arc<InjectionManage
                 Some("Reconnect") | Some("GameStart") => {}
                 _ if has_been_in_progress => {
                     // OS-level reset, NOT `kill_all_runoverlay_processes` — the
-                    // latter locks the injection mutex that this game's babysit
-                    // loop still holds, so it would self-deadlock exactly when a
-                    // runoverlay failed to self-exit (the case we're cleaning
-                    // up). `reset_stuck_injection` kills by OS enumeration with
-                    // no lock, letting the babysit loop's `try_wait` return.
+                    // latter locks the injection mutex this game's babysit loop
+                    // still holds, self-deadlocking exactly when a runoverlay
+                    // failed to self-exit. `reset_stuck_injection` kills by OS
+                    // enumeration with no lock instead.
                     injection.reset_stuck_injection();
                     break;
                 }

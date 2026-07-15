@@ -222,15 +222,11 @@ pub async fn build_profile(client: &reqwest::Client, auth: &Auth) -> Value {
         .cloned()
         .unwrap_or_default();
 
-    // The match-history *list* returns only the current player per game, so the
-    // full roster (all 10 players) — needed for the scoreboard, kill participation
-    // and MVP — must come from each game's *detail* endpoint. Fetch them
-    // concurrently; the detail object is a superset of the list object, so it can
-    // replace it wholesale in the loop below. Games whose detail fails fall back
-    // to the (single-player) list data.
-    // Fetch in bounded batches (not all 20 at once) so we don't flood the LCU
-    // and stall the client. 5 concurrent requests is plenty and keeps the client
-    // responsive while loading the profile.
+    // The match-history list only has the current player per game; scoreboard/kill
+    // participation/MVP need the full roster from each game's detail endpoint
+    // (a superset, so it replaces the list entry wholesale below; failed detail
+    // fetches fall back to list data). Fetched in bounded batches so we don't
+    // flood the LCU and stall the client.
     const DETAIL_CONCURRENCY: usize = 5;
     let mut detail_map: HashMap<i64, Value> = HashMap::new();
     for chunk in games.chunks(DETAIL_CONCURRENCY) {

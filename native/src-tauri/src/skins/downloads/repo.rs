@@ -1,10 +1,8 @@
 //! Skin repository downloader — ported from `utils\download\repo_downloader.py`
-//! (`RepoDownloader`), the only wired skin downloader (`SkinDownloader`/
-//! `SmartSkinDownloader` are superseded and dropped per
-//! `docs/SKINS_PORT.md` §0). Full download fetches the repo ZIP and
-//! extracts only the `skins/` and `resources/` archive prefixes; incremental
-//! update walks the GitHub compare API for a smaller diff when possible,
-//! falling back to the full ZIP.
+//! (`RepoDownloader`), the only wired skin downloader. Full download fetches
+//! the repo ZIP and extracts only the `skins/`/`resources/` archive prefixes;
+//! incremental update walks the GitHub compare API for a smaller diff when
+//! possible, falling back to the full ZIP.
 
 #![allow(dead_code)] // consumed by S9 (UI-driven download commands)
 
@@ -16,16 +14,13 @@ use crate::skins::slog::{log_info, log_warn};
 
 use super::{DownloadError, Progress};
 
-/// Upstream skin-data repository — the app's data dependency (skin
-/// archives, previews, and the skin-name -> id map), not Chud branding.
-/// // data source, not branding
+/// Upstream skin-data repository — a data dependency, not Chud branding.
 const REPO_URL: &str = "https://github.com/Alban1911/LeagueSkins";
 const API_BASE: &str = "https://api.github.com/repos/Alban1911/LeagueSkins";
 const RAW_BASE: &str = "https://raw.githubusercontent.com/Alban1911/LeagueSkins/main";
 
-/// Archive-root prefix GitHub's codeload ZIP names its top-level folder
-/// (ported verbatim from `repo_downloader.py`'s `'LeagueSkins-main/'`
-/// literal — tied to the `main` branch used in `download_repo_zip`'s URL).
+/// Archive-root prefix GitHub's codeload ZIP names its top-level folder —
+/// tied to the `main` branch used in `download_repo_zip`'s URL.
 const ARCHIVE_ROOT_PREFIX: &str = "LeagueSkins-main/";
 
 /// Local commit-SHA tracking file, stored next to the downloaded data
@@ -37,8 +32,7 @@ const VERSION_FILE_NAME: &str = ".skin_version";
 const STREAM_TIMEOUT_S: u64 = 60;
 
 /// Above this many changed files, fall back to a full ZIP download instead
-/// of individual requests (ported verbatim from
-/// `RepoDownloader.incremental_file_threshold`).
+/// of individual requests.
 const INCREMENTAL_FILE_THRESHOLD: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,9 +70,7 @@ struct ExtractStats {
 // ---------------------------------------------------------------------------
 
 /// Download the full repository ZIP and extract `skins/` + `resources/`
-/// into `skins_dir` / `resources_dir`, overwriting existing files (mirrors
-/// `download_and_extract_skins(force_update=True)`'s call site — the only
-/// place Python's `overwrite_existing` knob is ever set `True`).
+/// into `skins_dir`/`resources_dir`, overwriting existing files.
 pub async fn download_skins(
     skins_dir: &Path,
     resources_dir: &Path,
@@ -87,8 +79,7 @@ pub async fn download_skins(
     std::fs::create_dir_all(skins_dir)?;
     std::fs::create_dir_all(resources_dir)?;
 
-    // Remove a stray non-directory `skins` file left behind by very old
-    // installs (ported from `download_and_extract_skins`'s guard).
+    // Remove a stray non-directory `skins` file left behind by very old installs.
     let stray = skins_dir.join("skins");
     if stray.is_file() {
         log_info!("[DOWNLOADS] removing conflicting 'skins' file...");
@@ -133,9 +124,8 @@ async fn head_content_length(client: &reqwest::Client, url: &str) -> Option<u64>
 // `_cleanup_removed_skin_files`)
 // ---------------------------------------------------------------------------
 
-/// Classify a ZIP member by its (possibly archive-root-prefixed) path,
-/// stripping the `LeagueSkins-main/` prefix and then the `skins/`/
-/// `resources/` prefix — pure and unit-testable.
+/// Classify a ZIP member by path, stripping the `LeagueSkins-main/` prefix
+/// then the `skins/`/`resources/` prefix.
 fn classify_entry(name: &str) -> EntryKind {
     let stripped = name.strip_prefix(ARCHIVE_ROOT_PREFIX).unwrap_or(name);
     if let Some(rest) = stripped.strip_prefix("skins/") {
@@ -150,10 +140,9 @@ fn classify_entry(name: &str) -> EntryKind {
     EntryKind::Other
 }
 
-/// Defense-in-depth zip-slip guard: rejects absolute paths and any
-/// `..`/`.` component. Not part of the literal Python (which trusts the
-/// upstream ZIP), but cheap and consistent with this codebase's other
-/// archive-handling code (`injection::zips::safe_extractall`).
+/// Defense-in-depth zip-slip guard: rejects absolute paths and any `..`/`.`
+/// component. Not in the Python original (which trusts the upstream ZIP),
+/// but consistent with `injection::zips::safe_extractall`.
 fn is_safe_relative_path(rel: &str) -> bool {
     let path = Path::new(rel);
     !path.is_absolute() && path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
@@ -222,13 +211,11 @@ fn normalize_rel(rel: &str) -> String {
     rel.replace('\\', "/").to_lowercase()
 }
 
-/// Delete local files under `dir` that are absent from `expected_rel` — the
-/// ZIP's current file list. Guarded against wiping everything when the ZIP
-/// contained no matching files at all (ported verbatim from
-/// `_cleanup_removed_skin_files`'s empty-list safety check — the whole
-/// reason this function takes a bool rather than inferring emptiness from
-/// `expected_rel` itself, since a non-empty ZIP list can still normalize to
-/// an empty set if every entry was a directory marker).
+/// Delete local files under `dir` absent from `expected_rel` (the ZIP's
+/// current file list). `have_entries` is a separate bool rather than
+/// inferring emptiness from `expected_rel` — a non-empty ZIP list can still
+/// normalize to an empty set if every entry was a directory marker, and we
+/// don't want that to wipe everything.
 fn cleanup_removed(dir: &Path, expected_rel: &HashSet<String>, have_entries: bool) {
     if !have_entries {
         log_info!(
@@ -243,10 +230,9 @@ fn cleanup_removed(dir: &Path, expected_rel: &HashSet<String>, have_entries: boo
 
     let mut deleted = 0u32;
     for file in walk_files(dir) {
-        // Skip state-tracking files (ported verbatim from the Python guard;
-        // note it doesn't actually match `.skin_version` by name — harmless
-        // here since `download_skins` always rewrites the SHA file again
-        // right after this cleanup pass completes).
+        // Skip state-tracking files (doesn't actually match `.skin_version`
+        // by name — harmless since `download_skins` rewrites the SHA file
+        // again right after this cleanup pass).
         if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
             if name.starts_with('.') && name.ends_with("_state.json") {
                 continue;
@@ -287,10 +273,8 @@ fn walk_files_into(dir: &Path, out: &mut Vec<PathBuf>) {
 fn remove_empty_dirs(root: &Path) {
     let mut dirs = Vec::new();
     walk_dirs_into(root, &mut dirs);
-    // Deepest paths sort lexicographically greatest (they're the longest,
-    // most-specific strings), so reverse-sorting visits children before
-    // their parents — same ordering Python's `sorted(..., reverse=True)`
-    // relies on in `_cleanup_removed_skin_files`.
+    // Deepest paths sort lexicographically greatest, so reverse-sorting
+    // visits children before their parents.
     dirs.sort_by(|a, b| b.cmp(a));
     for dir in dirs {
         if let Ok(mut it) = std::fs::read_dir(&dir) {
@@ -343,8 +327,7 @@ fn save_local_sha(skins_dir: &Path, sha: &str) {
 }
 
 /// Fetch the latest commit SHA from the skin repo (1 API call). Never hard
-/// fails — mirrors Python's `fetch_remote_sha`, which logs a warning and
-/// returns `None` on any request error rather than propagating.
+/// fails — logs a warning and returns `None` on any request error.
 async fn fetch_remote_sha(client: &reqwest::Client) -> Result<Option<String>, DownloadError> {
     #[derive(serde::Deserialize)]
     struct CommitSha {
@@ -437,8 +420,7 @@ pub async fn download_skins_incremental(
 }
 
 /// Fetch changed files between two commits via the GitHub compare API.
-/// Returns `None` (never `Err`) on any failure — mirrors Python's
-/// `get_changed_files`, whose caller falls back to a full ZIP either way.
+/// Returns `None` (never `Err`) on any failure — caller falls back to a full ZIP.
 async fn fetch_changed_files(
     client: &reqwest::Client,
     old_sha: &str,

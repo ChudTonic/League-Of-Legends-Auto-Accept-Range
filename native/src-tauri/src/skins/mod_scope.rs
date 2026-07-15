@@ -4,31 +4,25 @@
 //! than downloaded through the Library).
 //!
 //! WHY: cslol `mkoverlay` merges every mod entry into EVERY game WAD whose
-//! table-of-contents contains that entry's path-hash. Community skin
-//! fantomes routinely include copies of widely-shared assets (a default
-//! particle texture present in 227 game WADs, `item_metadata.rec` in 173…),
-//! so one lazy include turns a single-champion skin into a 20+ GB, 2+ minute
-//! full-game overlay rebuild at loadout time — the League-session-wedging
-//! incident chain of 2026-07-12. Measured on "Rouxls Kaard Twisted Fate":
-//! raw 205 WADs / 22 GB / 164 s → scoped 21 WADs / 4 GB / 4 s.
+//! table-of-contents contains that entry's path-hash. Community fantomes
+//! routinely include copies of widely-shared assets (a particle texture in
+//! 227 game WADs, `item_metadata.rec` in 173...), turning a single-champion
+//! skin into a 20+ GB, 2+ minute full-game rebuild at loadout time — the
+//! League-session-wedging incident this fixes. Measured on one real mod:
+//! raw 205 WADs / 22 GB / 164 s -> scoped 21 WADs / 4 GB / 4 s.
 //!
 //! Per-entry rule (path-hash = xxh64 of the lowercased path):
-//!   KEEP  brand-new hashes (files the game doesn't have), and entries that
-//!         exist in ≤ `MAX_ENTRY_WADS` game WADs — those merge into a
-//!         handful of WADs at most, which is cheap and almost certainly
-//!         intentional content (the champion's own WAD, its
-//!         `X.<locale>.wad.client` VO sibling, event twins like
-//!         Strawberry_X, or ANOTHER champion in a multi-champion pack —
-//!         learned the hard way: an "Ahri" pack legitimately carried Akali
-//!         files living in exactly 1 WAD; any ownership/family test wrongly
-//!         strips that content)
+//!   KEEP  brand-new hashes, and entries in <= `MAX_ENTRY_WADS` game WADs —
+//!         cheap and almost certainly intentional (own WAD, locale VO
+//!         sibling, event twins, or ANOTHER champion in a multi-champion
+//!         pack — learned the hard way: an "Ahri" pack legitimately carried
+//!         Akali files in exactly 1 WAD; an ownership/family test wrongly strips that)
 //!   DROP  only entries present in many WADs — truly shared assets the game
 //!         already has everywhere. A skin never intends a global override.
 //!
 //! Sweeps run on a blocking thread at app startup and on every ChampSelect
-//! entry (minutes before the loadout injection needs the file), tracked in
-//! `state/mod_scope_state.json` so an already-processed mod costs one
-//! metadata stat. Originals are kept as `<name>.bak` beside the mod.
+//! entry, tracked in `state/mod_scope_state.json` so an already-processed
+//! mod costs one metadata stat. Originals are kept as `<name>.bak`.
 
 #![allow(dead_code)]
 
@@ -46,10 +40,9 @@ use crate::skins::slog::{log_error, log_info, log_warn};
 use crate::skins::{announcer_fix, lcu_ext, paths};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// An entry in ≤ this many game WADs is specifically-targetable content
+/// An entry in <= this many game WADs is specifically-targetable content
 /// (own WAD, locale sibling, event twins, other champs in a multi-champ
-/// pack) — cheap to merge and presumed intentional. Beyond it → shared junk
-/// (the catastrophic entries live in 34–227 WADs).
+/// pack) — presumed intentional. Beyond it, shared junk (34-227 WADs observed).
 const MAX_ENTRY_WADS: u32 = 5;
 /// Bump to force every mod through the scoper again after a rule change.
 /// v2: count-only rule — v1's WAD-family membership requirement wrongly

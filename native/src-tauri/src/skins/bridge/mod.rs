@@ -1,22 +1,15 @@
 //! Local bridge server for the in-client Pengu Loader plugins (S4) — an axum
 //! server on `127.0.0.1`, port picked from the first free slot in
-//! `50000..=50010` (ported from `utils\core\utilities.py::find_free_port`,
-//! narrowed from Python's 100-port scan since one local server never needs
-//! that many fallback attempts), written to `state_dir/bridge_port.txt` and
-//! served over all three plugin discovery paths (`GET /bridge-port`,
-//! `GET /port`, and the port file itself).
+//! `50000..=50010` (narrowed from Python's 100-port scan), written to
+//! `state_dir/bridge_port.txt` and served over `GET /bridge-port`/`/port`.
 //!
-//! `BridgeHandle` is the seam later milestones hang off of: S5 (game-flow
-//! ticker/trigger) and S6 (party) hold a clone and call its
-//! `broadcast_*` methods (see `broadcast.rs`) to push state to the plugins
-//! without reaching into `ws.rs` themselves. It is deliberately thin —
-//! `Clone + Send + Sync`, cheap to pass around — backed by a
-//! `tokio::sync::broadcast::Sender<String>` fanout channel: every connected
-//! plugin's WebSocket task subscribes its own `Receiver`, so "broadcast to
-//! all clients" falls out of the channel's own semantics instead of manually
-//! iterating a `Vec` of per-client senders. This still satisfies the
-//! broadcast-only contract (`docs/SKINS_PORT.md` §3) — there is no
-//! per-client targeted send anywhere in this module.
+//! `BridgeHandle` is the seam later milestones hang off of (game-flow
+//! ticker/trigger, party): clone it and call `broadcast_*` (see `broadcast.rs`)
+//! to push state to plugins without touching `ws.rs`. Thin, `Clone + Send +
+//! Sync`, backed by a `tokio::sync::broadcast::Sender<String>` — every
+//! client's WS task subscribes its own `Receiver`, so "broadcast to all"
+//! falls out of channel semantics instead of iterating a `Vec` of senders.
+//! Broadcast-only (`docs/SKINS_PORT.md` §3): no per-client targeted send.
 
 #![allow(dead_code)]
 
@@ -45,9 +38,8 @@ use crate::skins::SkinsState;
 const PORT_RANGE_START: u16 = 50000;
 const PORT_RANGE_END: u16 = 50010;
 /// Outbound fanout channel capacity — generous enough that a burst of state
-/// broadcasts (e.g. several `select-*` mods in a row) never lags a
-/// momentarily-slow client; a lagged client just misses the oldest entries
-/// (`tokio::sync::broadcast`'s documented behavior), it never blocks a sender.
+/// broadcasts never lags a slow client; a lagged client just misses the
+/// oldest entries (`tokio::sync::broadcast` semantics), never blocks a sender.
 const BROADCAST_CHANNEL_CAPACITY: usize = 256;
 
 struct BridgeInner {
@@ -55,10 +47,9 @@ struct BridgeInner {
     port: u16,
 }
 
-/// Cheap, cloneable handle to the running bridge. Store this in `AppState`;
-/// any `#[tauri::command]` or spawned task can call its `broadcast_*`
-/// methods (see `broadcast.rs`) to push a state update to every connected
-/// plugin — this is the S5/S6 integration seam.
+/// Cheap, cloneable handle to the running bridge. Store in `AppState`; any
+/// command or spawned task can call `broadcast_*` (see `broadcast.rs`) to
+/// push a state update to every connected plugin.
 #[derive(Clone)]
 pub struct BridgeHandle(Arc<BridgeInner>);
 
@@ -74,9 +65,7 @@ impl BridgeHandle {
     }
 
     /// Broadcast a pre-serialized JSON string to every connected client.
-    /// Errors (no subscribers currently connected) are expected and silently
-    /// ignored — mirrors Python's `if not connections: return` early-out in
-    /// every `Broadcaster.broadcast_*` method.
+    /// Errors (no subscribers connected) are expected and silently ignored.
     pub fn send_raw(&self, message: String) {
         let _ = self.0.tx.send(message);
     }
@@ -93,15 +82,12 @@ impl BridgeHandle {
 /// cloned into each connection task. All fields are `Arc`/cheap-`Clone`.
 #[derive(Clone)]
 pub struct BridgeContext {
-    /// Kept for on-demand access to `AppState` (skins config, injection ack,
-    /// admin checks) without widening `bridge::spawn`'s signature — see
-    /// `handlers::settings` for the call sites.
+    /// On-demand access to `AppState` (skins config, injection ack, admin
+    /// checks) without widening `bridge::spawn`'s signature.
     pub app: AppHandle,
     /// Map/font/announcer/other mod selections (`_handle_select_*`) live in
-    /// `skins.shared.lock_safe().category_mods` (`state::CategoryModSelections`)
-    /// — MIGRATED here from a bridge-local `ModSelections` this milestone
-    /// used to keep so `trigger.rs`'s injection trigger (which reads
-    /// `category_mods` directly) sees what the bridge selects.
+    /// `skins.shared.lock_safe().category_mods` (`state::CategoryModSelections`),
+    /// the same field `trigger.rs`'s injection trigger reads directly.
     pub skins: Arc<SkinsState>,
     pub injection: Arc<InjectionManager>,
     pub mod_storage: Arc<ModStorageService>,
@@ -124,9 +110,8 @@ fn bridge_port_file() -> PathBuf {
     paths::state_dir().join("bridge_port.txt")
 }
 
-/// Ported from `utilities.py::write_bridge_port` — best-effort, logged not
-/// propagated (a failed write just means plugins fall back to the
-/// `/bridge-port`/`/port` HTTP discovery paths instead of the file).
+/// Best-effort, logged not propagated — a failed write just means plugins
+/// fall back to the `/bridge-port`/`/port` HTTP discovery paths.
 fn write_bridge_port(port: u16) {
     let path = bridge_port_file();
     if let Some(parent) = path.parent() {
@@ -138,20 +123,16 @@ fn write_bridge_port(port: u16) {
     }
 }
 
-/// Read the current port back from disk (used by `http::route`'s
-/// `/bridge-port` handler so a stale in-memory port never disagrees with
-/// what's actually on disk — mirrors the Python handler's own file-read).
+/// Read the current port back from disk, so `http::route`'s `/bridge-port`
+/// handler never disagrees with what's actually on disk.
 pub(crate) fn read_bridge_port_file() -> Option<u16> {
     std::fs::read_to_string(bridge_port_file()).ok()?.trim().parse().ok()
 }
 
-/// Loopback-origin check (ported from `utils\core\security.py::
-/// is_loopback_origin`) — reject browser requests whose `Origin` header
-/// isn't hosted on this machine. NOTE: this is not real authentication — a
-/// non-browser client (the actual Pengu Loader plugin's CEF fetch context)
-/// sends no `Origin` header at all and bypasses this check entirely, exactly
-/// like the Python original. It only stops a malicious webpage the user
-/// visits in a normal browser from reaching this loopback server.
+/// Reject browser requests whose `Origin` header isn't hosted on this
+/// machine. NOT real authentication — the actual Pengu Loader plugin's CEF
+/// fetch context sends no `Origin` header and bypasses this entirely; it
+/// only stops a malicious webpage in a normal browser from reaching this server.
 pub(crate) fn is_loopback_origin(origin: &str) -> bool {
     let Some((scheme, rest)) = origin.split_once("://") else { return false };
     if scheme != "http" && scheme != "https" {
@@ -168,13 +149,12 @@ pub(crate) fn is_loopback_origin(origin: &str) -> bool {
 
 /// Spawn the bridge: binds the axum server, writes the port file, and wires
 /// the phase-event subscription that rebroadcasts phase-change/champion-lock
-/// to the plugins. Returns immediately with a `BridgeHandle`; the server
-/// itself runs on a spawned tokio task for the lifetime of the app.
+/// to plugins. Returns immediately with a `BridgeHandle`; the server runs on
+/// a spawned tokio task for the app's lifetime.
 ///
-/// `phase` is borrowed rather than consumed: `PhaseHandle` isn't `Clone`,
-/// and `lib.rs`'s `setup()` still needs to store the original in
-/// `AppState::skins_phase` for `lcu_ws.rs`'s fan-out — `PhaseHandle::subscribe`
-/// only needs `&self`, so a reference is all this function requires.
+/// `phase` is borrowed, not consumed: `PhaseHandle` isn't `Clone` and
+/// `lib.rs::setup()` needs to keep the original for `lcu_ws.rs`'s fan-out;
+/// `subscribe` only needs `&self`.
 pub fn spawn(app: AppHandle, skins: Arc<SkinsState>, injection: Arc<InjectionManager>, phase: &PhaseHandle) -> BridgeHandle {
     let port = find_free_port().unwrap_or_else(|| {
         log_error!("[bridge] No free port found in {PORT_RANGE_START}..={PORT_RANGE_END}; falling back to {PORT_RANGE_START}");
@@ -203,12 +183,9 @@ pub fn spawn(app: AppHandle, skins: Arc<SkinsState>, injection: Arc<InjectionMan
     handle
 }
 
-/// Subscribe to `PhaseHandle`'s broadcast and rebroadcast the two events the
-/// bridge needs to forward to plugins (`docs/SKINS_PORT.md`: "Subscribe to
-/// rebroadcast phase-change/champion-locked to plugins"). Other `PhaseEvent`
-/// variants (`ChampSelectEntered`, `Finalization`, LCU connect/disconnect)
-/// have no plugin-facing message in the Python protocol and are intentionally
-/// left unhandled here.
+/// Rebroadcast the two `PhaseEvent`s plugins need (phase-change,
+/// champion-locked). Other variants (`ChampSelectEntered`, `Finalization`,
+/// LCU connect/disconnect) have no plugin-facing message and are left unhandled.
 fn spawn_phase_rebroadcast(ctx: BridgeContext, phase: &PhaseHandle) {
     let mut events = phase.subscribe();
     tauri::async_runtime::spawn(async move {

@@ -1,15 +1,12 @@
-//! Offline skin name→ID resolution from the downloaded `skin_ids.json`
-//! (`%LOCALAPPDATA%\Chud\resources\{lang}\skin_ids.json`), a complete database
-//! of every skin's ID→name for each client language (produced by the
-//! `RepoDownloader`'s `resources/` extraction).
+//! Offline skin name->ID resolution from the downloaded `skin_ids.json` — a
+//! complete ID->name database per client language, produced by
+//! `RepoDownloader`'s `resources/` extraction.
 //!
-//! Used as a fallback when the LIVE LCU champion scrape
-//! (`lcu_ext::scrape_champion_skins` + `find_skin_by_text`) can't resolve a
-//! hovered skin name — which happens when the client's champion data comes back
-//! thin (observed on some machines, and more likely during ARAM's rapid bench
-//! swaps). Without this, an unresolved hover leaves `last_hovered_skin_id`
-//! empty and injection fails with "NO SKIN ID AVAILABLE" even though the skin
-//! is perfectly well-known offline. Ported from Rose's `SkinMapping`.
+//! Fallback when the LIVE LCU champion scrape can't resolve a hovered skin
+//! name (client data comes back thin on some machines, more likely during
+//! ARAM's rapid bench swaps). Without this, an unresolved hover leaves
+//! `last_hovered_skin_id` empty and injection fails with "NO SKIN ID
+//! AVAILABLE" even though the skin is well-known offline.
 
 #![allow(dead_code)]
 

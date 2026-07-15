@@ -1,15 +1,13 @@
 //! `%LOCALAPPDATA%\Chud` data-tree paths, plus elevation-aware desktop-user
 //! resolution (ported from `utils\core\paths.py`).
 //!
-//! The elevation dance matters because the Pengu Loader plugins run inside
-//! the League client's CEF process — always unelevated, always as the
-//! interactively-logged-in desktop user. If Chud itself is running elevated
-//! as a *different* account (a common "Run as administrator" admin account
-//! setup), naively reading `%LOCALAPPDATA%` would resolve the admin
-//! account's directory, and the two halves of the app would write to
-//! different trees. We instead find the desktop user via explorer.exe's
-//! token (explorer.exe always runs as the interactive user) and use that
-//! account's `AppData\Local` — matching what the Pengu Loader will see.
+//! The elevation dance matters because Pengu Loader plugins run inside the
+//! League client's CEF process — always unelevated, as the interactive
+//! desktop user. If Chud itself runs elevated as a *different* account
+//! ("Run as administrator"), naively reading `%LOCALAPPDATA%` would resolve
+//! the admin account's directory and the two halves of the app would write
+//! to different trees. Instead we find the desktop user via explorer.exe's
+//! token and use that account's `AppData\Local`, matching what Pengu Loader sees.
 
 #![allow(dead_code)] // consumed by S2+
 
@@ -121,9 +119,8 @@ fn desktop_local_appdata_uncached() -> Option<PathBuf> {
 }
 
 /// Find the desktop user's username + profile directory via explorer.exe's
-/// process token (explorer.exe always runs as the interactive user, even
-/// when this process is elevated as a different account). Returns `None` on
-/// any failure — callers must fall back to the normal env-var path.
+/// process token (always the interactive user, even when this process is
+/// elevated as a different account). `None` on any failure — callers fall back.
 #[cfg(windows)]
 fn desktop_user_info() -> Option<(String, String)> {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -201,9 +198,7 @@ fn desktop_user_info() -> Option<(String, String)> {
     }
 }
 
-/// Locate explorer.exe's PID (it always runs as the interactive desktop
-/// user). Mirrors the Python `tasklist` scrape via `sysinfo`, already a
-/// dependency for the LCU process scan.
+/// Locate explorer.exe's PID (always the interactive desktop user).
 #[cfg(windows)]
 fn explorer_pid() -> Option<u32> {
     use sysinfo::{ProcessesToUpdate, System};
@@ -216,9 +211,7 @@ fn explorer_pid() -> Option<u32> {
 }
 
 /// Base assets directory: exe-relative `resources/assets`, with a dev-mode
-/// fallback to the source tree so `cargo run` works without a bundled
-/// build. No PyInstaller/`_MEIPASS` equivalent — Tauri always runs from a
-/// real executable.
+/// fallback to the source tree so `cargo run` works without a bundled build.
 fn assets_dir() -> PathBuf {
     let exe_candidate = std::env::current_exe()
         .ok()
@@ -236,13 +229,12 @@ fn assets_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("resources/assets"))
 }
 
-/// Resolve an asset by relative name (e.g. `"champ-select-flyout-background-sr.jpg"`).
-/// Defense-in-depth against path traversal (ported from `paths.py::get_asset_path`):
-/// rejects absolute paths, drive letters, and `.`/`..`/empty components
-/// lexically, then requires the resolved path to still live under the
-/// assets dir even after symlink/junction resolution. Returns a
-/// guaranteed-missing path for invalid input rather than `Option`, matching
-/// the Python contract (callers already treat "doesn't exist" as not-found).
+/// Resolve an asset by relative name. Defense-in-depth against path
+/// traversal: rejects absolute paths, drive letters, and `.`/`..`/empty
+/// components lexically, then requires the resolved path to still live
+/// under the assets dir even after symlink/junction resolution. Returns a
+/// guaranteed-missing path for invalid input rather than `Option` (callers
+/// already treat "doesn't exist" as not-found).
 pub fn get_asset_path(name: &str) -> PathBuf {
     let assets = assets_dir();
     let invalid = assets.join("__invalid_asset_path__");

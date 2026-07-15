@@ -3,18 +3,18 @@
 //!
 //! During champion select the Riot client launches `League of Legends.exe`
 //! early; this monitor suspends it the moment it appears so cslol's overlay
-//! can hook file I/O before the game finishes loading assets, then resumes it
-//! the instant `runoverlay` starts (see `overlay::mk_run_overlay`).
+//! can hook file I/O before assets finish loading, then resumes it the
+//! instant `runoverlay` starts (see `overlay::mk_run_overlay`).
 //!
-//! Suspension uses the undocumented whole-process `NtSuspendProcess` /
-//! `NtResumeProcess` `ntdll` exports (the safe `windows` crate exposes only
-//! per-*thread* `SuspendThread`/`ResumeThread`). This is the single most
-//! safety-critical operation in the app: a suspended game that never resumes
-//! freezes the user's client forever, so resume is defended four ways —
-//! (1) the unconditional auto-resume timeout in the watcher loop,
-//! (2) `resume()`/`resume_if_suspended()`/`stop()` all resume a still-held
-//! process, (3) the resume handle is stored so resuming never depends on
-//! re-finding the process, and (4) a `Drop` guard resumes on teardown.
+//! Suspension uses the undocumented whole-process `NtSuspendProcess`/
+//! `NtResumeProcess` `ntdll` exports (the safe `windows` crate only exposes
+//! per-*thread* suspend/resume). This is the single most safety-critical
+//! operation in the app — a suspended game that never resumes freezes the
+//! client forever — so resume is defended four ways: (1) an unconditional
+//! auto-resume timeout in the watcher loop, (2) `resume()`/
+//! `resume_if_suspended()`/`stop()` all resume a still-held process, (3) the
+//! resume handle is stored so resuming never depends on re-finding the
+//! process, (4) a `Drop` guard resumes on teardown.
 
 #![allow(dead_code)] // some entry points are consumed by S5 (trigger) wiring
 
@@ -30,8 +30,7 @@ use windows::Win32::System::Threading::{OpenProcess, PROCESS_SUSPEND_RESUME};
 use crate::safety_manager::{InjectionDecision, InjectionOp, PolicyHook};
 use crate::skins::slog::{log_error, log_info};
 
-// Undocumented `ntdll` whole-process suspend/resume. Linked directly against
-// `ntdll.lib` (always present in the Windows SDK). `NTSTATUS` return: 0
+// Undocumented `ntdll` whole-process suspend/resume. `NTSTATUS` return: 0
 // (`STATUS_SUCCESS`) means the call succeeded.
 #[link(name = "ntdll")]
 extern "system" {
@@ -52,21 +51,18 @@ const RAPID_CHECKS: u32 = 10;
 const RAPID_INTERVAL: Duration = Duration::from_millis(5);
 const RESUME_MAX_ATTEMPTS: u32 = 3; // GAME_RESUME_MAX_ATTEMPTS
 const RESUME_VERIFY_WAIT: Duration = Duration::from_millis(100); // GAME_RESUME_VERIFICATION_WAIT_S
-/// 25s, down from the original 60s: a game held suspended for a full minute
-/// at launch misses the Riot client/Vanguard startup handshake and wedges the
-/// session (observed 2026-07-12: 60s freeze -> broken client state the user
-/// had to reboot + "repair" to clear). 25s still covers every legitimate
-/// overlay build (single-skin builds run <1s; the worst well-formed
-/// multi-mod builds observed run ~13s) while capping the damage a
-/// pathological build can do.
+/// 25s, down from 60s: a game held suspended a full minute at launch misses
+/// the Riot client/Vanguard handshake and wedges the session (observed:
+/// broken client state requiring reboot + repair). 25s still covers every
+/// legitimate build (single-skin <1s; worst multi-mod ~13s) while capping
+/// the damage a pathological build can do.
 const DEFAULT_AUTO_RESUME_SECS: f64 = 25.0;
 /// Consecutive `NtSuspendProcess` failures on the same pid before the
 /// watcher gives up. Repeated failures mean something (anticheat) is
-/// blocking suspension — retrying every 50ms forever just spams the log
-/// (observed 2026-07-12: ~16 failures/s until runoverlay happened to start).
+/// blocking suspension — retrying every 50ms forever just spams the log.
 const SUSPEND_MAX_FAILURES: u32 = 5;
 
-/// Reconstruct a `HANDLE` from the `isize` we store (raw `HANDLE` is a
+/// Reconstruct a `HANDLE` from the stored `isize` (raw `HANDLE` is a
 /// non-`Send` pointer; the integer form crosses the thread boundary safely).
 #[inline]
 fn handle_from(raw: isize) -> HANDLE {
@@ -89,9 +85,9 @@ fn suspend(raw: isize) -> bool {
     unsafe { NtSuspendProcess(handle_from(raw)) == 0 }
 }
 
-/// Resume the whole process, retrying like the Python original (the status
-/// read races the resume itself, so we call unconditionally rather than trust
-/// a "looks running" check). Always closes the handle afterward.
+/// Resume the whole process, retrying (a status read races the resume
+/// itself, so we call unconditionally rather than trust a "looks running"
+/// check). Always closes the handle afterward.
 fn resume_and_close(raw: isize) {
     for attempt in 1..=RESUME_MAX_ATTEMPTS {
         let ok = unsafe { NtResumeProcess(handle_from(raw)) == 0 };
@@ -117,21 +113,18 @@ struct MonitorState {
     runoverlay_started: bool,
     /// Unconditional safety net: resume no matter what after this long.
     auto_resume: Duration,
-    /// Set when the auto-resume safety net fired: the game was released
-    /// WITHOUT runoverlay having started. The in-flight overlay build is
-    /// now pointless (the game is loading vanilla assets) and must be
-    /// aborted — `overlay::mk_run_overlay` polls this.
+    /// Set when the auto-resume safety net fired: game released WITHOUT
+    /// runoverlay starting. The in-flight build is now pointless and must
+    /// be aborted — `overlay::mk_run_overlay` polls this.
     auto_resumed: bool,
     /// When the watcher first saw the game process this cycle.
     game_first_seen: Option<Instant>,
     /// Whether a suspend ever succeeded this cycle. A game that loads
-    /// without ever being frozen (anticheat refused `NtSuspendProcess`)
-    /// must NOT be hooked late — see `unsuspended_game_age`.
+    /// without ever freezing (anticheat refused suspend) must NOT be hooked
+    /// late — see `unsuspended_game_age`.
     ever_suspended: bool,
-    /// Safety policy hook (P0-A): consulted immediately before every
-    /// `NtSuspendProcess`. `None` only in unit tests / before `setup()`
-    /// wires it — production monitors are only armed by an
-    /// `InjectionManager` whose own Build gate already passed.
+    /// Safety policy hook (P0-A), consulted before every suspend. `None`
+    /// only in unit tests / before `setup()` wires it.
     policy: Option<PolicyHook>,
 }
 
@@ -188,7 +181,7 @@ impl GameMonitor {
     }
 
     /// Start watching for the game and suspend it the moment it appears.
-    /// Stops any prior watcher first, exactly like the Python original.
+    /// Stops any prior watcher first.
     pub fn start(&mut self) {
         self.stop();
         {
@@ -207,8 +200,7 @@ impl GameMonitor {
     }
 
     /// Resume the suspended game (called the instant `runoverlay` starts).
-    /// Sets `runoverlay_started` unconditionally first — like the Python
-    /// original — so the watcher stops suspending even if resume fails.
+    /// Sets `runoverlay_started` first so the watcher stops suspending even if resume fails.
     pub fn resume(&mut self) {
         {
             let mut st = self.state.lock_safe();
@@ -237,22 +229,18 @@ impl GameMonitor {
         self.state.lock_safe().active
     }
 
-    /// True once the auto-resume safety net has fired for the current
-    /// `start()` cycle: the game was released without runoverlay. Any
-    /// in-flight overlay build should abort — hooking after the game has
-    /// loaded its assets does nothing but burn disk I/O against the loading
-    /// game (`overlay::mk_run_overlay` polls this in its mkoverlay wait loop).
+    /// True once the auto-resume safety net has fired this cycle: game
+    /// released without runoverlay. Any in-flight build should abort —
+    /// `overlay::mk_run_overlay` polls this in its mkoverlay wait loop.
     pub fn auto_resume_fired(&self) -> bool {
         self.state.lock_safe().auto_resumed
     }
 
-    /// Age of a game process that has been loading WITHOUT ever being
-    /// suspended (anticheat refused the freeze, or it spawned before the
-    /// watcher armed). `None` when no game has been seen or the freeze
-    /// worked. `overlay::mk_run_overlay` refuses to start `runoverlay`
-    /// against a game past `MAX_LATE_HOOK_AGE` — hooking cslol into a
-    /// half-loaded game crashes it (observed 2026-07-12: 31s unsuspended
-    /// load, hook at start+31s, game crashed).
+    /// Age of a game process loading WITHOUT ever being suspended (anticheat
+    /// refused the freeze, or it spawned before the watcher armed). `None`
+    /// when no game has been seen or the freeze worked. `overlay::mk_run_overlay`
+    /// refuses to start `runoverlay` past `MAX_LATE_HOOK_AGE` — hooking cslol
+    /// into a half-loaded game crashes it (observed: 31s unsuspended load, game crashed).
     pub fn unsuspended_game_age(&self) -> Option<Duration> {
         let st = self.state.lock_safe();
         if st.ever_suspended {
@@ -307,9 +295,8 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
         let mut interval = if checks_done < RAPID_CHECKS { RAPID_INTERVAL } else { HUNT_INTERVAL };
         checks_done = checks_done.saturating_add(1);
 
-        // P0-A safety gate, evaluated immediately before a suspend could
-        // happen. Deliberately evaluated OUTSIDE the MonitorState lock: the
-        // hook takes AppState locks (config, safety snapshot), and holding
+        // P0-A safety gate, evaluated OUTSIDE the MonitorState lock: the hook
+        // takes AppState locks (config, safety snapshot), and holding
         // MonitorState across those would invert the established
         // `skins_injection -> inner -> MonitorState` lock order.
         let suspend_denial = if game_pid.is_some() {
@@ -333,8 +320,7 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
             match (game_pid, st.suspended.is_some()) {
                 (Some(pid), false) => {
                     // Safety policy says no: never freeze the game. Stop the
-                    // watcher entirely — the overlay build will be refused by
-                    // its own gate, so there is nothing left to time.
+                    // watcher — the overlay build will be refused by its own gate.
                     if let Some(d) = suspend_denial {
                         log_error!("[SAFETY] Game suspend blocked ({}) - {}; monitor stopping", d.code(), d.message());
                         st.active = false;
@@ -357,10 +343,8 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
                             }
                             suspend_failures += 1;
                             if suspend_failures >= SUSPEND_MAX_FAILURES {
-                                // Something (anticheat) is refusing the suspend;
-                                // retrying every poll just spams. Injection
-                                // proceeds without the freeze — runoverlay can
-                                // still hook if it starts early enough.
+                                // Anticheat likely refusing the suspend; retrying every
+                                // poll just spams. Injection proceeds without the freeze.
                                 log_error!(
                                     "[monitor] NtSuspendProcess failed {SUSPEND_MAX_FAILURES}x for pid={pid} - giving up suspension (anticheat blocking?)"
                                 );

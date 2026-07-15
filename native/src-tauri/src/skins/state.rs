@@ -1,12 +1,10 @@
 //! `SkinsShared`: the skins subsystem's per-session state, ported from
 //! Python's `state\core\shared_state.py` `SharedState` dataclass.
 //!
-//! The Python original mutated this god object from 5+ OS threads under the
-//! GIL, with documented races (see `docs/SKINS_PORT.md` "Threading model").
-//! Chud puts the whole struct behind one `Mutex` (see `skins::SkinsState`),
-//! so the per-field `threading.Lock`s Python needed (`timer_lock`,
-//! `swiftplay_lock`) are gone — the outer coarse mutex already serializes
-//! every mutation.
+//! Python mutated this god object from 5+ OS threads under the GIL, with
+//! documented races. Chud puts the whole struct behind one `Mutex` (see
+//! `skins::SkinsState`), so the per-field `threading.Lock`s Python needed
+//! (`timer_lock`, `swiftplay_lock`) are gone.
 //!
 //! Untyped back-references to other subsystem objects (`ui_skin_thread`,
 //! `party_manager`, `swiftplay_handler`, `force_base_skins_callback`) are NOT
@@ -19,14 +17,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// Historic-mode's in-memory selection for the currently-tracked champion:
-/// either a plain skin/chroma ID, or a custom mod's relative path (mirrors
-/// Python's `historic_skin_id`, which could hold either an `int` or a
-/// `"path:<rel>"` string — see `ui/handlers/historic_mode_handler.py`). The
+/// either a plain skin/chroma ID, or a custom mod's relative path. The
 /// on-disk union lives in `features::historic::HistoricEntry` (which keeps
-/// the literal `"path:"` prefix for `historic.json` compatibility); this
-/// type is the prefix-stripped runtime form other modules match on. See
-/// `HistoricEntry::to_selection`/`From<&HistoricSelection> for HistoricEntry`
-/// for the conversion between the two.
+/// the literal `"path:"` prefix for `historic.json` compatibility); this is
+/// the prefix-stripped runtime form other modules match on — see
+/// `HistoricEntry::to_selection`/`From<&HistoricSelection>` for the conversion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoricSelection {
     SkinId(i64),
@@ -49,14 +44,9 @@ pub struct CustomModSelection {
 /// — mirrors Python's `selected_map_mod`/`selected_font_mod`/
 /// `selected_announcer_mod`/`selected_other_mods` dict shapes.
 ///
-/// MIGRATED (S5) from `bridge::ModSelection`/`ModSelections`: S4's own doc
-/// comment flagged that those belonged here but `state.rs` wasn't in S4's
-/// file scope. `state.rs` is S5's to edit, so the fields landed here, and a
-/// reconciliation pass afterward made `bridge/handlers.rs`'s `select-map`/
-/// `select-font`/`select-announcer`/`select-other` handlers write straight
-/// into `SkinsShared::category_mods` (the bridge-local `ModSelection`/
-/// `ModSelections` types were removed — nothing else read them), so
-/// `trigger.rs`'s injection trigger now sees real bridge-driven selections.
+/// `bridge/handlers.rs`'s `select-map`/`select-font`/`select-announcer`/
+/// `select-other` handlers write straight into `SkinsShared::category_mods`,
+/// so `trigger.rs`'s injection trigger sees real bridge-driven selections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CategoryModSelection {
     pub mod_name: String,
@@ -194,12 +184,8 @@ pub struct SkinsShared {
     pub selected_custom_mod: Option<CustomModSelection>,
 
     // ---- Category mod selections (map/font/announcer/other) ----
-    /// See `CategoryModSelections`'s doc comment for the S5 migration note.
-    /// Persists across games like Python's originals (`selected_map_mod`
-    /// etc. are NOT cleared by `reset_for_champ_select` — see its doc
-    /// comment / injection_trigger.py's "Keep mod selections in state so
-    /// they persist across games" comment) — deliberately not touched by
-    /// either reset function below.
+    /// Persists across games like Python's originals — deliberately not
+    /// touched by either reset function below ("keep mod selections so they persist").
     pub category_mods: CategoryModSelections,
 
     // ---- Party mode (P2P skin sharing with friends) ----
@@ -290,18 +276,15 @@ impl Default for SkinsShared {
 }
 
 impl SkinsShared {
-    /// Per-game re-arm reset for a fresh ChampSelect entry (ported from
-    /// `threads\handlers\champ_select_reset.py::perform_champ_select_reset`).
-    /// Idempotent via `champ_select_reset_done`: returns `false` (no-op) if
-    /// the reset already ran for the current ChampSelect. Callers must call
+    /// Per-game re-arm reset for a fresh ChampSelect entry. Idempotent via
+    /// `champ_select_reset_done`: returns `false` (no-op) if the reset
+    /// already ran for the current ChampSelect. Callers must call
     /// `note_phase_for_champ_select_guard` on every observed phase so the
     /// guard re-arms once ChampSelect/FINALIZATION is left.
     ///
-    /// Side effects the Python version performed inline here — reloading
-    /// `owned_skin_ids` from the LCU inventory, requesting UI
-    /// reinitialization, and broadcasting the champion-unlock state to the
-    /// bridge — are NOT part of this pure state mutation; the S2+ caller
-    /// (phase actor / lcu_ext) performs them after this returns `true`.
+    /// Side effects Python performed inline here — reloading
+    /// `owned_skin_ids`, UI reinit, broadcasting champion-unlock — are NOT
+    /// part of this pure state mutation; the caller performs them after this returns `true`.
     pub fn reset_for_champ_select(&mut self) -> bool {
         if self.champ_select_reset_done {
             return false;
@@ -354,9 +337,8 @@ impl SkinsShared {
         true
     }
 
-    /// Re-arm the ChampSelect reset guard once we leave ChampSelect/FINALIZATION
-    /// (ported from `champ_select_reset.py::note_phase_for_reset`). Call on
-    /// every observed phase transition.
+    /// Re-arm the ChampSelect reset guard once we leave ChampSelect/FINALIZATION.
+    /// Call on every observed phase transition.
     pub fn note_phase_for_champ_select_guard(&mut self, phase: Option<&str>) {
         let in_champ_select = matches!(phase, Some("ChampSelect") | Some("FINALIZATION"));
         if !in_champ_select {
@@ -364,15 +346,13 @@ impl SkinsShared {
         }
     }
 
-    /// Full reset on LCU disconnect (ported from
-    /// `main\core\lcu_handler.py::create_lcu_disconnection_handler`). A
-    /// superset of `reset_for_champ_select` — also clears phase/game-mode/
-    /// swiftplay state that survives across a single ChampSelect but not a
-    /// full client disconnect.
+    /// Full reset on LCU disconnect. A superset of `reset_for_champ_select`
+    /// — also clears phase/game-mode/swiftplay state that survives across a
+    /// single ChampSelect but not a full client disconnect.
     ///
     /// UI-thread cache reset, LCU WS disconnect, and tray-icon refresh are
-    /// side effects on Python's `ui_skin_thread`/`app_status` back-references
-    /// (not state fields); wired via channels in later milestones.
+    /// side effects on Python back-references (not state fields); wired via
+    /// channels in later milestones.
     pub fn reset_on_lcu_disconnect(&mut self) {
         self.phase = None;
         self.hovered_champ_id = None;

@@ -3,10 +3,9 @@
 //! relay connection or LCU. A selection's signature binds it to
 //! `(epoch, member_id, champion_id, skin_id, chroma_id, custom_mod_hash,
 //! announcer_mod_id)` so a captured payload can't be replayed into a
-//! different room instance (the relay mints a fresh `epoch` per DO instance)
-//! or reattributed to a different `member_id` — the relay itself doesn't
-//! enforce any of this, it just relays whatever `sanitize_skin` (in
-//! `relay-worker`) accepts, so verification is entirely on the client.
+//! different room instance or reattributed to a different `member_id` — the
+//! relay itself enforces none of this, it just relays whatever
+//! `sanitize_skin` accepts, so verification is entirely on the client.
 
 #![allow(dead_code)]
 

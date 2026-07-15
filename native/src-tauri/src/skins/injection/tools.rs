@@ -1,8 +1,7 @@
 //! cslol tool presence + DMCA dll-hash gate — ported from
 //! `injection\tools\tools_manager.py` (`ToolsManager`) and the `_check_dll_hash`
-//! allowlist in `main\__init__.py`. `cslol-diag.exe` is dropped (dead per
-//! `docs/SKINS_PORT.md` scope decisions — "cslol-diag.exe wiring") — it is
-//! not in the required-tools list or `ToolPaths`.
+//! allowlist in `main\__init__.py`. `cslol-diag.exe` is dropped (dead) — not
+//! in the required-tools list or `ToolPaths`.
 
 #![allow(dead_code)] // consumed by S3+ (injector/overlay wiring)
 
@@ -33,10 +32,8 @@ pub struct ToolPaths {
     pub cslol_dll: PathBuf,
 }
 
-/// Why `verify_cslol_dll` refused the DLL — mirrors the two failure paths in
-/// `main\__init__.py::_check_dll_present` (missing vs. hash-mismatch), minus
-/// the Windows TaskDialog/MessageBox UI those functions also drove (a
-/// user-facing prompt for this is S9's concern, not the injection subsystem's).
+/// Why `verify_cslol_dll` refused the DLL — mirrors the two Python failure
+/// paths (missing vs. hash-mismatch); the user-facing prompt is the UI's concern, not this module's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DllVerifyError {
     /// `cslol-dll.dll` isn't present in the tools directory at all.
@@ -48,11 +45,9 @@ pub enum DllVerifyError {
 }
 
 /// Exe-relative bundled-resources root, with a dev-mode fallback to the
-/// source tree (same pattern as `paths::assets_dir` — `cargo run` works
-/// without a bundled build). `paths.rs` only knows the *writable*
-/// `%LOCALAPPDATA%\Chud` tree, not the read-only bundled-resources tree, so
-/// this helper lives here and is reused by `pengu.rs` for the bundled Pengu
-/// Loader payload.
+/// source tree (`cargo run` works without a bundled build). `paths.rs` only
+/// knows the writable user-data tree, not this read-only one, so this
+/// helper lives here and is reused by `pengu.rs`.
 pub fn resources_root() -> PathBuf {
     let exe_candidate = std::env::current_exe()
         .ok()
@@ -67,42 +62,34 @@ pub fn resources_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("resources"))
 }
 
-/// RUNTIME cslol-tools directory — `%LOCALAPPDATA%\Chud\cslol-tools`
-/// (user-data), NOT the install folder. We run `mod-tools.exe` from here so an
-/// installer update never has to overwrite a locked, in-use tool — running it
-/// straight out of the install dir was the recurring "Error opening file for
-/// writing: mod-tools.exe" cause, because the running overlay held that exact
-/// file open while the updater tried to replace it. It's also precisely where
-/// the user-supplied `cslol-dll.dll` already lives, so mod-tools finds the DLL
-/// right beside itself.
+/// RUNTIME cslol-tools directory — user-data, NOT the install folder. We run
+/// `mod-tools.exe` from here so an installer update never has to overwrite a
+/// locked, in-use tool (running straight out of the install dir was the
+/// recurring "Error opening file for writing: mod-tools.exe" cause). It's
+/// also where the user-supplied `cslol-dll.dll` already lives.
 pub fn cslol_tools_dir() -> PathBuf {
     crate::skins::paths::data_root().join("cslol-tools")
 }
 
-/// The read-only copy shipped inside the installer (`(exe)/resources/cslol-tools/`)
-/// — the SOURCE that `ensure_cslol_tools` seeds the runtime dir from on first
-/// launch. Never executed directly, so the updater can always overwrite it.
+/// The read-only copy shipped inside the installer — the SOURCE that
+/// `ensure_cslol_tools` seeds the runtime dir from. Never executed directly,
+/// so the updater can always overwrite it.
 pub fn bundled_cslol_tools_dir() -> PathBuf {
     resources_root().join("cslol-tools")
 }
 
-/// Seed the user-data runtime cslol-tools dir from the bundled installer copy.
-/// The tools are byte-identical across Chud versions, so only a MISSING file is
-/// copied — never overwrite (an existing `mod-tools.exe` may be held open by a
-/// live runoverlay, and the user-supplied `cslol-dll.dll` must never be
-/// clobbered). Because the app runs everything from user-data afterward, the
-/// installer's copy is never executed, never locked, and an update that
-/// overwrites it can't fail. Call once at startup; failures are silent (the
-/// injection hash gate reports a genuinely missing/invalid tool). Supersedes
-/// the old dll-only shuffle — the DLL's persistent location was already this
-/// same user-data dir, so nothing moves for existing installs.
+/// Seed the user-data runtime cslol-tools dir from the bundled installer
+/// copy. Only a MISSING file is copied — never overwrite (an existing
+/// `mod-tools.exe` may be held open by a live runoverlay, and the
+/// user-supplied `cslol-dll.dll` must never be clobbered). Since the app
+/// runs everything from user-data afterward, the installer's copy is never
+/// executed or locked, so an update overwriting it can't fail. Call once at
+/// startup; failures are silent (the hash gate catches a genuinely missing/invalid tool).
 pub fn ensure_cslol_tools() {
     let bundled = bundled_cslol_tools_dir();
     let runtime = cslol_tools_dir();
     let _ = std::fs::create_dir_all(&runtime);
-    // Small, byte-identical tools + the user-supplied DLL: straight copy if
-    // missing. Never overwrite (a present file may be a locked runoverlay's
-    // mod-tools.exe, or the user's own dll).
+    // Copy only if missing; never overwrite a locked mod-tools.exe or the user's own dll.
     for tool in ["mod-tools.exe", "wad-extract.exe", "wad-make.exe", "cslol-dll.dll"] {
         let dst = runtime.join(tool);
         if !dst.exists() {
@@ -112,12 +99,10 @@ pub fn ensure_cslol_tools() {
             }
         }
     }
-    // The ~207MB game-hash file mod-tools reads from its own dir is downloaded
-    // at runtime (never in the installer). Migrate an existing copy from the
-    // old install-folder location so relocating the runtime dir doesn't force a
-    // fresh 207MB re-download. Atomic (temp + rename) so an interrupted copy
-    // never leaves a corrupt hashes file that would break mkoverlay; if it's
-    // absent (fresh install), the downloader fetches it into the runtime dir.
+    // The ~207MB game-hash file is downloaded at runtime, never shipped in
+    // the installer. Migrate an existing copy from the old install-folder
+    // location so relocating the runtime dir doesn't force a re-download;
+    // atomic (temp + rename) so an interrupted copy never leaves a corrupt file.
     let hashes_dst = runtime.join("hashes.game.txt");
     let hashes_src = bundled.join("hashes.game.txt");
     if !hashes_dst.exists() && hashes_src.exists() {
@@ -179,10 +164,9 @@ pub fn detect_tools(tools_dir: &Path) -> ToolPaths {
     paths
 }
 
-/// Verify `cslol-dll.dll` against the pinned SHA-256 allowlist (ported from
-/// `main\__init__.py::_check_dll_hash`/`_check_dll_present`'s hash-gate logic).
-/// Hard-fails (returns `Err`) if missing or mismatched — exactly like the Python original;
-/// callers must treat either as "injection unavailable", not a soft warning.
+/// Verify `cslol-dll.dll` against the pinned SHA-256 allowlist. Hard-fails
+/// (`Err`) if missing or mismatched — callers must treat either as
+/// "injection unavailable", not a soft warning.
 pub fn verify_cslol_dll(tools_dir: &Path) -> Result<(), DllVerifyError> {
     let dll_path = tools_dir.join("cslol-dll.dll");
     if !dll_path.exists() {
@@ -210,11 +194,9 @@ pub fn verify_cslol_dll(tools_dir: &Path) -> Result<(), DllVerifyError> {
     }
 }
 
-/// Set Hidden+System attributes on `path` and everything under it
-/// (Windows only). Ported from the identical `_hide_directory` helper that
-/// was duplicated in both `overlay_manager.py` (hides the overlay dir after
-/// mkoverlay) and `mod_manager.py` (hides an extracted mod dir) — one copy
-/// here, shared by `overlay.rs` and `storage.rs`.
+/// Set Hidden+System attributes on `path` and everything under it (Windows
+/// only). One copy shared by `overlay.rs` and `storage.rs`, where Python had
+/// this duplicated across two modules.
 #[cfg(windows)]
 pub fn hide_directory_recursive(path: &Path) {
     use std::os::windows::ffi::OsStrExt;

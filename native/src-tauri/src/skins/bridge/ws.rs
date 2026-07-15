@@ -1,26 +1,16 @@
 //! WebSocket upgrade + connection loop (S4) — ported from `pengu\core\
-//! websocket_server.py`'s `WebSocketServer`. One axum `fallback` handler
-//! serves both HTTP and the WebSocket upgrade on the same port (mirroring
-//! Python's `serve(..., process_request=self._process_http_request)`
-//! dual-purpose handler): a request with `Upgrade: websocket` is promoted to
-//! a socket, everything else falls through to `http::route`.
+//! websocket_server.py`. One axum `fallback` handler serves both HTTP and
+//! the WS upgrade on the same port: `Upgrade: websocket` promotes to a
+//! socket, everything else falls through to `http::route`.
 //!
-//! BROADCAST-ONLY fanout (hard behavior contract, `docs/SKINS_PORT.md` §3):
-//! every inbound message's response/side-effect broadcast goes to ALL
-//! connected clients via `BridgeHandle::subscribe`'s fanout channel — there
-//! is no per-connection targeted reply anywhere in this module, matching
-//! Python's `_send_response`/`Broadcaster` both calling the same
-//! `websocket_server.broadcast(...)` regardless of which client sent the
-//! triggering message.
+//! BROADCAST-ONLY (hard contract, `docs/SKINS_PORT.md` §3): every inbound
+//! message's response goes to ALL connected clients via `BridgeHandle::subscribe`
+//! — no per-connection targeted reply anywhere in this module.
 //!
-//! Keepalive: `ping_interval=20s` / `ping_timeout=20s` (ported from Python's
-//! `serve(..., ping_interval=20, ping_timeout=20)` — tuned for AV/VPN
-//! compatibility, preserve). Axum's `WebSocketUpgrade` has no built-in
-//! periodic-ping option (unlike the Python `websockets` library), so this is
-//! reimplemented explicitly: a `Ping` frame is sent every 20s, and the
-//! connection is dropped if no frame of any kind (including the client's
-//! automatic `Pong`) has been seen for 40s (20s ping cadence + 20s grace,
-//! i.e. one missed ping cycle).
+//! Keepalive: ping every 20s, drop after 40s of no frames (20s cadence + 20s
+//! grace = one missed cycle) — tuned for AV/VPN compatibility, preserve.
+//! Axum has no built-in periodic-ping (unlike Python's `websockets` lib), so
+//! this is reimplemented explicitly.
 
 #![allow(dead_code)]
 
@@ -41,9 +31,7 @@ use super::{handlers, http, is_loopback_origin, BridgeContext};
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const PING_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Build the axum router: a single fallback dispatches every request
-/// (mirrors Python's one `_handler`/`_process_http_request` pair covering the
-/// whole port).
+/// Build the axum router: a single fallback dispatches every request.
 pub fn router(ctx: BridgeContext) -> Router {
     Router::new().fallback(get(dispatch)).with_state(ctx)
 }
@@ -104,9 +92,7 @@ async fn handle_socket(socket: WebSocket, ctx: BridgeContext) {
                     }
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(_)) => {
-                        // Ping/Pong/Binary frames don't carry a payload we
-                        // route, but they do count as activity for the
-                        // timeout check below.
+                        // Ping/Pong/Binary: no payload to route, but still counts as activity.
                         last_activity = Instant::now();
                     }
                     Some(Err(e)) => {

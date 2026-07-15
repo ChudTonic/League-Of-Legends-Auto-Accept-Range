@@ -1,15 +1,13 @@
 //! mod-tools `mkoverlay`/`runoverlay` wrapper — ported from
 //! `injection\overlay\overlay_manager.py` (`OverlayManager.mk_run_overlay`).
 //!
-//! THE CLI CONTRACT (`docs/SKINS_PORT.md` §2/§3) is preserved
-//! character-for-character — these argv strings are a wire contract with
-//! cslol's `mod-tools.exe`, not our code to reshape:
+//! THE CLI CONTRACT is preserved character-for-character — these argv
+//! strings are a wire contract with cslol's `mod-tools.exe`, not ours to reshape:
 //!   `mkoverlay <mods_dir> <overlay_dir> --game:<gpath> --mods:<a>/<b> --noTFT --ignoreConflict`
 //!   `runoverlay <overlay_dir> <overlay_dir>/cslol-config.json --game:<gpath> --opts:configless`
 //!
-//! Security note carried over from the Python original: every argv above is
-//! built from trusted internal paths/config — no user-controlled input ever
-//! reaches these commands directly.
+//! Every argv above is built from trusted internal paths/config — no
+//! user-controlled input ever reaches these commands directly.
 
 #![allow(dead_code)] // consumed by S3+ (injector wiring)
 
@@ -36,16 +34,13 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// setup (ported from `config.ENABLE_MKOVERLAY_PRIORITY_BOOST`).
 pub const ENABLE_MKOVERLAY_PRIORITY_BOOST: bool = true;
 /// `runoverlay` runs for the entire game session; boosting its priority
-/// would compete with the game for CPU and hurt performance (ported
-/// verbatim from `config.ENABLE_RUNOVERLAY_PRIORITY_BOOST`, which the
-/// Python original ships `false` — asymmetric with the mkoverlay boost above).
+/// would compete with the game for CPU and hurt performance (asymmetric
+/// with the mkoverlay boost above).
 pub const ENABLE_RUNOVERLAY_PRIORITY_BOOST: bool = false;
 
-/// `subprocess.Popen(..., timeout=120)`'s default mkoverlay timeout (ported
-/// verbatim from `OverlayManager.mk_run_overlay`'s `timeout: int = 120`).
-/// This is the ABSOLUTE ceiling for a build with no suspended game; a build
-/// holding a suspended game hostage is bounded much tighter by the
-/// auto-resume abort below.
+/// Default mkoverlay timeout — the ABSOLUTE ceiling for a build with no
+/// suspended game; a build holding a suspended game hostage is bounded much
+/// tighter by the auto-resume abort below.
 const MKOVERLAY_TIMEOUT: Duration = Duration::from_secs(120);
 /// `PROCESS_MONITOR_SLEEP_S` — poll interval while babysitting the running
 /// `runoverlay` child.
@@ -57,16 +52,14 @@ const SIZE_CHECK_EVERY: u32 = 40; // ~every 2s
 /// A single-champion overlay is tens of MB; even a heavy multi-mod set stays
 /// well under this. Crossing it means cslol's fuzzy WAD matching decided a
 /// mod (typically a RAW/loose-file custom fantome with shared asset paths)
-/// touches nearly every WAD in the game and is rebuilding a full game copy
-/// (observed 2026-07-12: 17 GB / 156 WADs for a 4-mod set that legitimately
-/// touched 4 WADs). Warn loudly so the offending mod set is identifiable.
+/// touches nearly every WAD and is rebuilding a full game copy (observed:
+/// 17 GB / 156 WADs for a 4-mod set that legitimately touched 4).
 const OVERLAY_SIZE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Never inject the hook into a game that has been loading UNSUSPENDED
-/// longer than this: cslol's dll redirects file opens, and switching
-/// redirects mid-load on a game that already opened half its WADs crashes
-/// it (observed 2026-07-12: anticheat blocked the freeze, mkoverlay ran
-/// 31s, hook landed at load+31s, game crashed). A fresh unsuspended game
-/// (a few seconds old) is still safe — that's cslol's normal hook window.
+/// Never inject the hook into a game loading UNSUSPENDED longer than this:
+/// switching cslol's file-open redirects mid-load, after the game already
+/// opened half its WADs, crashes it (observed: anticheat blocked the freeze,
+/// hook landed at load+31s, game crashed). A fresh unsuspended game is still
+/// safe — that's cslol's normal hook window.
 const MAX_LATE_HOOK_AGE: Duration = Duration::from_secs(8);
 
 /// How the mkoverlay wait loop ended.
@@ -74,29 +67,23 @@ enum BuildWait {
     Exited(std::process::ExitStatus),
     /// Hit `MKOVERLAY_TIMEOUT`.
     TimedOut,
-    /// The game monitor's auto-resume safety fired: the game is now running
+    /// The game monitor's auto-resume safety fired: the game is running
     /// WITHOUT the overlay hooked, so finishing the build is pointless — it
-    /// would only keep grinding the disk (at boosted priority) against the
-    /// loading game. This was the "corrupted League" incident chain: 60s
-    /// frozen game -> forced resume -> another 60s of full-throttle WAD
-    /// writes during load -> wedged Riot session needing reboot + repair.
+    /// only grinds the disk against the loading game. Root cause of the
+    /// "corrupted League" incident: 60s frozen -> forced resume -> another
+    /// 60s of full-throttle WAD writes -> wedged Riot session.
     GameAutoResumed,
 }
 
 /// Create the overlay (`mkoverlay`) and run it (`runoverlay`), resuming the
-/// suspended game exactly when `runoverlay` starts (ported from
-/// `OverlayManager.mk_run_overlay`).
+/// suspended game exactly when `runoverlay` starts.
 ///
-/// Returns `Ok(0)` on success, or `Ok(<code>)` mirroring one of Python's
-/// sentinel return codes (`127` missing tool, `124` mkoverlay timeout, `125`
-/// build aborted because the game auto-resumed without it, `126` hook
-/// refused because the game loaded too long unsuspended, `123` safety
-/// policy denial (P0-A, new — no Python equivalent), `1`
-/// general error, or the child's own nonzero exit code) — wrapped in
-/// `Result` per the S3 interface contract, but every failure path Python
-/// handled without raising stays an `Ok` here too; `Err` is reserved for
-/// setup failures Python didn't model as a return code (e.g. failing to
-/// create the overlay directory).
+/// Returns `Ok(0)` on success, or `Ok(<code>)` with a sentinel return code:
+/// `127` missing tool, `124` mkoverlay timeout, `125` build aborted because
+/// the game auto-resumed without it, `126` hook refused (game loaded too
+/// long unsuspended), `123` safety policy denial (P0-A), `1` general error,
+/// or the child's own exit code. `Err` is reserved for setup failures with
+/// no sentinel code (e.g. failing to create the overlay directory).
 #[allow(clippy::too_many_arguments)]
 pub fn mk_run_overlay(
     tools: &ToolPaths,
@@ -113,10 +100,9 @@ pub fn mk_run_overlay(
         return Ok(127);
     }
 
-    // P0-A safety gate, re-checked immediately before the build (state may
-    // have changed since the entry check). A denial here must leave nothing
-    // behind: no child spawned yet, so just resume any suspended game and
-    // bail. `None` hook fails closed — an ungated build never runs.
+    // P0-A safety gate, re-checked before the build (state may have changed
+    // since the entry check). No child spawned yet, so just resume any
+    // suspended game and bail. `None` hook fails closed.
     if let Some(denial) = policy_denial(policy, InjectionOp::Build) {
         log_error!("[SAFETY] mkoverlay blocked ({}) - {}", denial.code(), denial.message());
         game_monitor.resume_if_suspended();
@@ -161,10 +147,8 @@ pub fn mk_run_overlay(
         boost_priority(child.id());
     }
 
-    // Drain stdout+stderr on separate threads — CSLOL's logi() may write to
-    // stdout, and reading only one pipe risks filling the other's buffer and
-    // deadlocking the child (ported from overlay_manager.py's read_output
-    // threads).
+    // Drain stdout+stderr on separate threads — reading only one pipe risks
+    // filling the other's buffer and deadlocking the child.
     let stdout_pipe = child.stdout.take().expect("mkoverlay spawned with piped stdout");
     let stderr_pipe = child.stderr.take().expect("mkoverlay spawned with piped stderr");
     let stdout_thread = std::thread::spawn(move || drain_pipe(stdout_pipe));
@@ -248,18 +232,16 @@ pub fn mk_run_overlay(
 
     log_info!("[INJECT] mkoverlay completed in {:.2}s", mkoverlay_duration.as_secs_f64());
 
-    // Build finished, but if the safety net released the game in the meantime
-    // (race: build completes a beat after the auto-resume fired), the game is
-    // already loading vanilla assets — hooking now yields partial/no skins.
-    // Treat it like the abort case instead of pretending the injection worked.
+    // Build finished, but if the safety net released the game meanwhile
+    // (race: completes a beat after auto-resume fired), the game is already
+    // loading vanilla assets — treat it like the abort case.
     if game_monitor.auto_resume_fired() {
         log_error!("[INJECT] Game auto-resumed before runoverlay could start - skipping overlay this game");
         cleanup_failed_build(mods_dir, overlay_dir);
         return Ok(125);
     }
-    // Same idea when the freeze never happened at all (anticheat refused the
-    // suspend): a game that has been loading normally for a while must not
-    // be hooked now — late injection into a half-loaded game crashes it.
+    // Same idea when the freeze never happened (anticheat refused the
+    // suspend) — late injection into a half-loaded game crashes it.
     if let Some(age) = game_monitor.unsuspended_game_age() {
         if age > MAX_LATE_HOOK_AGE {
             log_error!(
@@ -278,10 +260,8 @@ pub fn mk_run_overlay(
 
     log_info!("[INJECT] mkoverlay done - starting runoverlay");
 
-    // P0-A safety gate, re-checked immediately before the hook process
-    // starts — the build takes seconds, plenty of time for a queue/phase/
-    // consent change. A denial here aborts exactly like the auto-resume
-    // race above: clean up the built overlay and never hook the game.
+    // P0-A safety gate, re-checked before the hook process starts — the
+    // build takes seconds, plenty of time for a queue/phase/consent change.
     if let Some(denial) = policy_denial(policy, InjectionOp::RunOverlay) {
         log_error!("[SAFETY] runoverlay blocked ({}) - {}", denial.code(), denial.message());
         cleanup_failed_build(mods_dir, overlay_dir);
@@ -300,9 +280,8 @@ pub fn mk_run_overlay(
         .arg(format!("--game:{gpath}"))
         .arg("--opts:configless")
         .creation_flags(CREATE_NO_WINDOW)
-        // Capture output on drain threads that live as long as the child —
-        // cslol reports hook attempts/failures here, and discarding them left
-        // us blind to "runoverlay never attached" failures (2026-07-12).
+        // Capture output on drain threads — cslol reports hook attempts/failures
+        // here, and discarding them left us blind to "runoverlay never attached".
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -349,19 +328,15 @@ pub fn mk_run_overlay(
     game_monitor.resume();
 
     // Return as soon as the overlay is live — DO NOT block until the game ends.
-    // The caller (`InjectionManager::do_inject_locked`) holds the injection
-    // mutex across this whole function. The old code then sat in a loop waiting
-    // for `runoverlay` to exit, which meant the mutex was held for the ENTIRE
-    // match — and if that wait ever hung (observed in the wild: the loop's
-    // `try_wait` never returned even after `runoverlay` had self-exited), the
-    // mutex was leaked and EVERY later injection in the session timed out
-    // acquiring it and silently failed ("skins stopped loading after one game").
-    // There is no legitimate concurrent injection DURING a game, so holding the
-    // mutex here bought nothing. The overlay persists on its own via the running
-    // `runoverlay` process; the next champ-select's `reset_stuck_injection`
-    // sweep reaps it, and the next injection overwrites the tracked child +
-    // cleans the overlay dir before rebuilding. `runoverlay` also self-exits
-    // when the game closes.
+    // The caller holds the injection mutex across this whole function; the
+    // old code looped waiting for `runoverlay` to exit, holding the mutex
+    // for the ENTIRE match. When that wait hung (`try_wait` never returned
+    // even after self-exit), the mutex leaked and every later injection that
+    // session silently failed ("skins stopped loading after one game").
+    // There's no legitimate concurrent injection DURING a game, so holding
+    // the mutex bought nothing — the overlay persists on its own via the
+    // running `runoverlay` process; `reset_stuck_injection` reaps it at the
+    // next champ-select, and `runoverlay` also self-exits when the game closes.
     log_info!("[INJECT] Overlay is live - injection complete");
     Ok(0)
 }
@@ -383,10 +358,9 @@ fn drain_pipe(pipe: impl Read) -> Vec<String> {
     BufReader::new(pipe).lines().map_while(Result::ok).map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
 }
 
-/// Delete extracted skin files immediately after mkoverlay consumes them
-/// (ported from `OverlayManager._wipe_mods_dir`). Junction-safe: the custom
-/// mod path stages entries as junctions into the extract cache / the user's
-/// mod library, which must be unlinked, never recursed into.
+/// Delete extracted skin files immediately after mkoverlay consumes them.
+/// Junction-safe: the custom mod path stages entries as junctions into the
+/// extract cache/user's mod library, which must be unlinked, never recursed into.
 fn wipe_dir_contents(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
@@ -397,8 +371,7 @@ fn wipe_dir_contents(dir: &Path) {
 
 /// Failure-path cleanup: unlink staged mods and delete the (possibly
 /// multi-GB, partially-written) overlay so an aborted build never leaves a
-/// carcass on disk (observed 2026-07-12: a killed 122s build left 17 GB in
-/// the overlay dir until the next injection happened to clean it).
+/// carcass on disk (observed: a killed 122s build left 17 GB behind).
 fn cleanup_failed_build(mods_dir: &Path, overlay_dir: &Path) {
     wipe_dir_contents(mods_dir);
     let _ = std::fs::remove_dir_all(overlay_dir);
@@ -429,9 +402,8 @@ fn wipe_dir(dir: &Path) {
     log_info!("[INJECT] Wiped overlay directory after game ended");
 }
 
-/// Boost `pid`'s priority class to `HIGH_PRIORITY_CLASS` (ported from
-/// `psutil.Process.nice(psutil.HIGH_PRIORITY_CLASS)`). Best-effort — mirrors
-/// Python swallowing the exception and just logging.
+/// Boost `pid`'s priority class to `HIGH_PRIORITY_CLASS`. Best-effort —
+/// swallows failure and just logs.
 fn boost_priority(pid: u32) {
     unsafe {
         let Ok(handle) = OpenProcess(PROCESS_SET_INFORMATION, false, pid) else {

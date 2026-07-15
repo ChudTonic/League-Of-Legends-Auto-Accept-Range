@@ -1,12 +1,9 @@
 //! Random skin selection — ported from `ui/handlers/randomization_handler.py`.
 //!
-//! The Python handler kept two debounce flags (`_randomization_started`,
-//! `_randomization_in_progress`) as instance state to guard against a
-//! double-click starting two randomizations at once. Those aren't part of
-//! `SkinsShared` (they're UI-click debouncing, not session state other
-//! subsystems need), so that guard is the caller's job here (the S4 bridge
-//! handler already has to debounce the inbound click message); these
-//! functions key off the observable `random_mode_active` flag instead.
+//! The Python handler's double-click debounce flags were UI-click state, not
+//! session state — that guard is the caller's job here (the S4 bridge
+//! handler already debounces the inbound click message); these functions
+//! key off the observable `random_mode_active` flag instead.
 
 #![allow(dead_code)]
 
@@ -86,9 +83,8 @@ pub fn cancel_randomization(shared: &mut SkinsShared) {
 }
 
 /// `RandomizationHandler.reset_on_skin_change`: cancel randomization if a
-/// skin change (chroma pick, historic mode, etc.) happened while it was
-/// active. Returns whether it was actually active (so the caller knows
-/// whether a broadcast is needed).
+/// skin change happened while it was active. Returns whether it was
+/// actually active (so the caller knows whether a broadcast is needed).
 pub fn reset_on_skin_change(shared: &mut SkinsShared) -> bool {
     if shared.random_mode_active {
         cancel_randomization(shared);

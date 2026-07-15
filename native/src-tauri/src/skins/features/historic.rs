@@ -1,12 +1,8 @@
 //! Historic-mode persistence: `historic.json` (last injected unowned skin
 //! per champion) and `mod_historic.json` (last-selected map/font/announcer +
-//! category mods), ported from `utils/core/historic.py` and `utils/core/
-//! mod_historic.py`. Both formats are kept byte-for-byte compatible even
-//! though Chud has no users of the prior Python app to migrate (`docs/SKINS_PORT.md` §3) — the
-//! cost of preserving them is one enum, and it keeps the JS plugins (which
-//! read/write these files directly) untouched.
-//!
-//! The Python original's `get_user_data_dir()` -> Chud's `skins::paths::state_dir()`.
+//! category mods), ported from `utils/core/historic.py`/`mod_historic.py`.
+//! Both formats are kept byte-for-byte compatible so the JS plugins, which
+//! read/write these files directly, stay untouched.
 
 #![allow(dead_code)]
 
@@ -24,8 +20,7 @@ use crate::skins::state::HistoricSelection;
 
 /// One `historic.json` value: either an official skin/chroma ID, or a
 /// custom mod's relative path with the `"path:"` prefix preserved literally
-/// (untagged so the JSON stays `{"234": 234000}` / `{"234": "path:..."}`,
-/// exactly the shape `utils/core/historic.py` reads and writes).
+/// (untagged so the JSON stays `{"234": 234000}` / `{"234": "path:..."}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum HistoricEntry {
@@ -48,11 +43,9 @@ impl HistoricEntry {
     }
 
     /// Convert to the prefix-stripped runtime `HistoricSelection` other
-    /// modules (`ticker::resolve_injection_name`, `bridge::broadcast`) match
-    /// on. A `Path` entry without the `"path:"` prefix (malformed/legacy) is
-    /// still treated as a custom-mod path verbatim, mirroring
-    /// `is_custom_mod_path`'s type-only check in the Python original for the
-    /// dict-shape check but keeping the raw string for diagnosis.
+    /// modules match on. A `Path` entry without the `"path:"` prefix
+    /// (malformed/legacy) is still treated as a custom-mod path verbatim,
+    /// keeping the raw string for diagnosis.
     pub fn to_selection(&self) -> HistoricSelection {
         match self {
             HistoricEntry::Skin(id) => HistoricSelection::SkinId(*id),
@@ -114,8 +107,7 @@ pub fn clear_historic_entry(champion_id: i64) {
 // ---------------------------------------------------------------------
 // mod_historic.json — last-selected map/font/announcer + category mods
 // (ui/voiceover/loading_screen/vfx/sfx/others). The legacy single-string
-// `"other"` key (`mod_historic.py`'s best-effort migration) is intentionally
-// NOT ported — Chud has no pre-existing installs of the prior app to migrate from.
+// `"other"` key migration is intentionally NOT ported (no prior installs to migrate).
 // ---------------------------------------------------------------------
 
 pub const MOD_HISTORIC_CATEGORIES: [&str; 6] = ["ui", "voiceover", "loading_screen", "vfx", "sfx", "others"];
@@ -232,10 +224,8 @@ mod tests {
         assert_eq!(path.custom_mod_path(), Some("foo/bar.fantome"));
     }
 
-    /// Mirrors `historic.json`'s real on-disk shape (a map of champion ID ->
-    /// entry, not a single bare value) with BOTH a skin/chroma-ID entry and a
-    /// `"path:<rel>"` custom-mod entry present at once, round-tripped through
-    /// serde exactly like `load_historic_map`/`save_historic_map` do.
+    /// Mirrors `historic.json`'s on-disk shape with both a skin-ID entry and
+    /// a `"path:<rel>"` custom-mod entry present at once.
     #[test]
     fn historic_map_round_trips_int_and_path_values_together() {
         let mut map = HashMap::new();

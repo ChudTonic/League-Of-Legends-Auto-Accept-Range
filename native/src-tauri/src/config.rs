@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutoAccept {
-    /// Whether Auto-Accept arms on app launch. Persisted so the user's on/off
-    /// choice survives a restart instead of silently re-arming every launch.
+    /// Whether Auto-Accept arms on launch; persisted so it doesn't silently
+    /// re-arm regardless of the user's last choice.
     pub enabled: bool,
     pub check_interval: f64,
     pub retry_delay: f64,
@@ -44,12 +44,10 @@ pub struct Safety {
     pub block_in_ranked: bool,
     /// Dashboard (Auto-Range / input-injection) ban-risk acknowledgement.
     pub injection_ack: bool,
-    /// Versioned SKIN-injection risk acknowledgement (P0-A). `0` = never
-    /// acknowledged / revoked; injection is allowed only while this is >=
-    /// `safety_manager::CURRENT_SKINS_ACK_VERSION`, so bumping that constant
-    /// re-gates everyone behind the updated disclosure. Backend-persisted —
-    /// replaces the old frontend-only localStorage ack, which never actually
-    /// gated anything.
+    /// Versioned skin-injection risk acknowledgement. `0` = never acknowledged;
+    /// injection allowed only while >= `safety_manager::CURRENT_SKINS_ACK_VERSION`,
+    /// so bumping that constant re-gates everyone. Backend-persisted (the old
+    /// frontend-only localStorage ack never actually gated anything).
     pub skins_ack_version: u32,
     pub check_interval: f64,
 }
@@ -85,12 +83,11 @@ pub struct SkinsCfg {
     /// Empty = unset; `CHUD_RELAY_URL` env overrides at the use site (party
     /// mode is gated on this until the relay worker is deployed).
     pub party_relay_url: String,
-    /// `GameMonitor`'s unconditional auto-resume safety timeout — never
-    /// leave the game suspended longer than this even if `runoverlay` never
-    /// starts. `GameMonitor::set_auto_resume_timeout` clamps 1..=180s.
-    /// Default 25s (was 60s): a game frozen ~60s at launch misses the Riot
-    /// client/Vanguard startup handshake and wedges the session until a
-    /// reboot; 25s still covers the slowest legitimate overlay builds.
+    /// `GameMonitor`'s unconditional auto-resume safety timeout — never leave
+    /// the game suspended longer than this even if `runoverlay` never starts
+    /// (clamped 1..=180s). Default 25s: 60s missed the Vanguard startup
+    /// handshake and wedged the session until reboot; 25s still covers the
+    /// slowest legitimate overlay builds.
     pub monitor_auto_resume_timeout_secs: f64,
 }
 
@@ -114,8 +111,8 @@ pub struct Runes {
     pub enabled: bool,
     /// Auto-import the moment you lock a champion in champ select.
     pub auto_import: bool,
-    /// Chud "runes" Cloudflare Worker URL (the `/runes` endpoint that returns
-    /// the normalized build). Empty = feature inert (no import attempted).
+    /// Chud "runes" Worker URL (`/runes` endpoint returning the normalized
+    /// build). Empty = feature inert.
     pub endpoint: String,
     /// Preferred build source, passed through to the Worker ("winrate" |
     /// "popular"); the Worker decides how to honor it.
@@ -125,9 +122,8 @@ pub struct Runes {
 impl Default for Runes {
     fn default() -> Self {
         Self {
-            // Opt-in (off by default so we never silently overwrite someone's
-            // rune page), but pre-pointed at Chud's runes Worker so turning the
-            // toggle on is all it takes.
+            // Opt-in (never silently overwrite a rune page), but pre-pointed at
+            // Chud's runes Worker so turning the toggle on is all it takes.
             enabled: false,
             auto_import: true,
             endpoint: "https://chud-runes.jivy26.workers.dev/runes".into(),
@@ -136,11 +132,9 @@ impl Default for Runes {
     }
 }
 
-/// In-client declutter/ad-remover toggles. Consumed by the `CHUD-Declutter`
-/// Pengu plugin, which fetches this over the bridge (`/client-customization`)
-/// and injects CSS to hide the matching League-client elements. Every option
-/// defaults OFF (opt-in) so a fresh install never silently alters the client.
-/// Selectors were captured from the live client DOM (see CHUD-Declutter CSS).
+/// In-client declutter/ad-remover toggles, consumed by the `CHUD-Declutter` Pengu
+/// plugin over the bridge (`/client-customization`) to inject hiding CSS. Every
+/// option defaults OFF so a fresh install never silently alters the client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientCustomization {
@@ -164,11 +158,9 @@ pub struct ClientCustomization {
     pub hide_event_timers: bool,
     /// Hide the animated video background on the play/home screen.
     pub hide_home_video: bool,
-    /// Notification DND — hide attention-nag pips/badges (activity-center dot,
-    /// call-to-action pips, Clash pip, loyalty/rewards badge, nav "new" badges).
+    /// Notification DND — hide attention-nag pips/badges across the client.
     pub hide_notif_badges: bool,
-    /// Queue Arena — show the in-client skillshot-dodge minigame while searching
-    /// for a match. Independent of the declutter `enabled` master switch.
+    /// Queue Arena minigame while searching for a match; independent of `enabled`.
     pub queue_arena: bool,
 }
 
@@ -191,11 +183,9 @@ impl Default for ClientCustomization {
     }
 }
 
-/// Chat presence override — "Appear Offline" and friends. When `appear_offline`
-/// is on, Chud sets your League chat availability to `offline` and re-asserts it
-/// (the client resets availability on some gameflow events), so you stay hidden
-/// from your friends list while still playing. Off by default; toggling it off
-/// restores you to online. Pure LCU write, no Vanguard surface.
+/// Chat presence override. When `appear_offline` is on, sets League chat
+/// availability to `offline` and re-asserts it (the client resets availability on
+/// some gameflow events). Off by default. Pure LCU write, no Vanguard surface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Presence {
@@ -208,12 +198,10 @@ impl Default for Presence {
     }
 }
 
-/// Skin Library (BETA) — the in-app browser for the upstream skin catalog,
-/// served through Chud's `chud-skins` Cloudflare Worker. Hidden behind a beta
-/// toggle (`enabled`, default off) until the feature is finished, so it only
-/// shows for people who opt in from Settings.
-/// A mod the user has installed via the Library (persisted so it survives
-/// restarts, like favorites — kept in the config dir, not the install dir).
+/// Skin Library (BETA): in-app browser for the upstream skin catalog, served
+/// through `chud-skins`. Hidden behind a beta toggle until finished.
+/// A mod installed via the Library, persisted in the config dir (not the install
+/// dir) so it survives restarts, like favorites.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InstalledMod {
@@ -247,8 +235,7 @@ pub struct Library {
 impl Default for Library {
     fn default() -> Self {
         Self {
-            // Library is stable enough to ship on by default; the beta toggle in
-            // Settings stays so it can be turned off, but it starts enabled.
+            // Stable enough to ship on by default; the Settings toggle can still turn it off.
             enabled: true,
             endpoint: "https://chud-skins.jivy26.workers.dev".into(),
             installed: std::collections::HashMap::new(),
@@ -258,13 +245,10 @@ impl Default for Library {
     }
 }
 
-/// Extra hosts allowed for OUTBOUND external (non-LCU) requests, on top of
-/// `net::allowed_origins`'s built-ins (Chud's own Workers + GitHub) and the
-/// hosts already implied by `runes.endpoint`/`library.endpoint`/
-/// `skins.party_relay_url`. Empty by default — this exists for an operator
-/// who points one of those endpoints somewhere `net` can't infer (e.g. a
-/// self-hosted mirror reachable only via a different domain than the
-/// configured endpoint).
+/// Extra hosts allowed for outbound external (non-LCU) requests, on top of
+/// `net::allowed_origins`'s built-ins and the hosts implied by the configured
+/// endpoints. Empty by default — for an operator pointing an endpoint somewhere
+/// `net` can't infer (e.g. a self-hosted mirror on a different domain).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Network {
@@ -277,13 +261,10 @@ impl Default for Network {
     }
 }
 
-/// Party mode (P0-F). OFF by default, and `PartyManager::enable` refuses to
-/// run until the versioned data-sharing consent has been accepted — a fresh
-/// install (or an upgrade from the auto-enable era) makes NO relay
-/// connection before the user opts in. What is transmitted, to whom, and
-/// for how long is documented in `docs/PRIVACY-PARTY.md`; bumping the
-/// current consent version in `party::manager` re-gates everyone whenever
-/// that disclosure changes materially.
+/// Party mode. OFF by default; `PartyManager::enable` refuses to run until the
+/// versioned data-sharing consent is accepted — no relay connection before opt-in.
+/// Transmission details are in `docs/PRIVACY-PARTY.md`; bumping the consent
+/// version in `party::manager` re-gates everyone when the disclosure changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Party {
@@ -294,8 +275,7 @@ pub struct Party {
     /// (0 = never / revoked).
     pub consent_version: u32,
     /// Auto-download announcer packs peers advertise (verified against the
-    /// Library catalog before any fetch). Off by default — peer-triggered
-    /// downloads need their own opt-in on top of party consent.
+    /// Library catalog first). Off by default — needs its own opt-in.
     pub auto_download_peer_announcers: bool,
 }
 
@@ -356,8 +336,8 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// Party mode (P0-F) must ship fully opted-out: no auto-connect, no
-    /// accepted disclosure, no peer-triggered downloads.
+    /// Party mode must ship fully opted-out: no auto-connect, no accepted
+    /// disclosure, no peer-triggered downloads.
     #[test]
     fn party_defaults_are_off() {
         let p = Party::default();

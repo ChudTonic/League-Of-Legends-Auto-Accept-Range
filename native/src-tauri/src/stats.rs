@@ -1,5 +1,5 @@
-//! Match/session statistics. Persisted to the per-user data dir. Single
-//! process, so no cross-process file lock is needed (unlike the Python app).
+//! Match/session statistics. Persisted to the per-user data dir. Single process,
+//! so no cross-process file lock is needed.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};

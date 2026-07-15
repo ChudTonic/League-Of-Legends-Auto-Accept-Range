@@ -1,9 +1,7 @@
 //! Per-injection orchestration — ported from `injection\core\injector.py`
-//! (`SkinInjector`). Collapses the Python original's PyInstaller `_MEIPASS`/one-dir/one-file
-//! branching in its constructor down to plain exe-relative resolution
-//! (`tools::resources_root`) — Tauri always runs from a real executable, so
-//! there's no frozen/dev split to detect at runtime the way PyInstaller
-//! needed.
+//! (`SkinInjector`). Collapses Python's PyInstaller `_MEIPASS`/one-dir/one-file
+//! branching down to plain exe-relative resolution (`tools::resources_root`)
+//! — Tauri always runs from a real executable, no frozen/dev split to detect.
 
 #![allow(dead_code)] // consumed by S3+ (mod.rs / S5 trigger wiring)
 
@@ -42,37 +40,24 @@ impl SkinInjector {
         let _ = std::fs::create_dir_all(&mods_dir);
         let _ = std::fs::create_dir_all(&zips_dir);
 
-        // Check for CSLOL tools up front (ported from
-        // `SkinInjector.__init__`'s `self.tools_manager.check_tools_available()`
-        // call — logged only, doesn't block construction).
+        // Check for CSLOL tools up front — logged only, doesn't block construction.
         tools::check_tools_available(&tools_dir);
 
         Self { tools_dir, mods_dir, zips_dir, overlay_dir, game_dir, process: process::new_shared_overlay_process(), policy }
     }
 
-    /// Inject a single skin, with optional chroma and extra (party/category)
-    /// mods (ported from `SkinInjector.inject_skin`).
+    /// Inject a single skin, with optional chroma and extra (party/category) mods.
     ///
-    /// `extra_mod_names` replaces Python's `extra_mods_callback: Callable[[SkinInjector], List[str]]`
-    /// — the callback pattern let the party-mode hook reach back into the
-    /// injector to extract its own mods lazily. This port instead expects
-    /// the caller (S5's trigger / S6's party hook) to have already prepared
-    /// those mod folders (e.g. via `zips::link_or_extract` into `mods_dir`)
-    /// and pass their resulting folder names directly — `injector.rs`
-    /// doesn't hold a reference to party/trigger internals, so a callback
-    /// shape would just recreate that coupling here instead of removing it.
+    /// `extra_mod_names` replaces Python's `extra_mods_callback`: the caller
+    /// (trigger/party hook) must already have staged those mod folders into
+    /// `mods_dir` and pass the resulting folder names directly.
     ///
     /// CLEAN ORDERING CONTRACT: `clean_mods_dir` only runs here when
-    /// `extra_mod_names` is empty. When the caller passes extras, it means
-    /// those folders are ALREADY staged in `mods_dir` for this exact
-    /// overlay — cleaning here would wipe them, contradicting the promise
-    /// above that the caller's pre-extracted folders survive. So cleaning
-    /// becomes the CALLER's job in that case: clean `mods_dir` FIRST, then
-    /// stage `extra_mod_names`, then call this. `trigger.rs::
-    /// run_custom_mod_injection` and `swiftplay.rs::extract_tracked_skins`
-    /// both do exactly that. This lets one overlay carry the union of a
-    /// primary skin plus every pre-staged extra, instead of the extras being
-    /// silently deleted by an unconditional clean here.
+    /// `extra_mod_names` is empty — when extras are passed they're ALREADY
+    /// staged in `mods_dir` for this overlay, so cleaning here would wipe
+    /// them. In that case cleaning is the CALLER's job: clean first, stage
+    /// extras, then call this (`trigger.rs`/`swiftplay.rs` both do this), so
+    /// one overlay can carry a primary skin plus every pre-staged extra.
     pub fn inject_skin(
         &self,
         skin_name: &str,
@@ -84,9 +69,7 @@ impl SkinInjector {
     ) -> Result<bool, String> {
         let injection_start = Instant::now();
 
-        // Extract base skin name (strip a trailing numeric skin ID) for
-        // chroma path construction (ported verbatim from inject_skin's
-        // `base_skin_name` derivation).
+        // Strip a trailing numeric skin ID for chroma path construction.
         let base_skin_name = strip_trailing_skin_id(skin_name);
 
         let Some(zp) =
@@ -149,15 +132,11 @@ impl SkinInjector {
         }
     }
 
-    /// Build the overlay from ALREADY-STAGED mods only, with no primary skin
-    /// — the "mods only, no primary" entry point the S5 port deferred. Used
-    /// when this player picked no skin of their own but still owes the overlay
-    /// their party teammates' skins (so a peer who keeps their default skin
-    /// still shows everyone else's picks). The caller must have staged
-    /// `mod_names` into `mods_dir` already (e.g. via
-    /// `PartyManager::prepare_party_mods` through `stage_party_mods`); this
-    /// never resolves/extracts a primary skin and never cleans the mods dir
-    /// (that would wipe the just-staged mods).
+    /// Build the overlay from ALREADY-STAGED mods only, with no primary
+    /// skin. Used when this player picked no skin of their own but still
+    /// owes the overlay their party teammates' skins. The caller must have
+    /// staged `mod_names` into `mods_dir` already; this never
+    /// resolves/extracts a primary skin and never cleans the mods dir.
     pub fn inject_mods_only(&self, game_monitor: &mut GameMonitor, mod_names: &[String]) -> Result<bool, String> {
         if mod_names.is_empty() {
             return Ok(false);
@@ -299,11 +278,9 @@ mod tests {
         assert!(!should_clean_mods_dir(&["CHUD-Map".to_string()]));
     }
 
-    /// A temp dir with a pre-staged extra mod folder must survive the
-    /// conditional clean when extras are present (multi-mod overlay case:
-    /// custom mod + category mods, or Swiftplay's N-champion overlay), and
-    /// must still be wiped in the plain single-skin case (no extras) so
-    /// stale mods from a previous game don't leak into a fresh overlay.
+    /// A pre-staged extra mod folder must survive the conditional clean when
+    /// extras are present, but still get wiped in the plain single-skin case
+    /// so stale mods don't leak into a fresh overlay.
     #[test]
     fn clean_ordering_preserves_staged_extras_but_still_wipes_stale_mods_alone() {
         let root = std::env::temp_dir().join("chud_injector_test_clean_ordering");

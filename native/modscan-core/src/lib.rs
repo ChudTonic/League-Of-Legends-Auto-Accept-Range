@@ -1,16 +1,13 @@
 //! `modscan-core` — a defensive scanner for League of Legends mod archives
 //! (`.fantome` files, which are just renamed `.zip`s).
 //!
-//! This crate is intentionally PURE: no Tauri, no networking, no filesystem
-//! writes. It only ever reads the bytes it is handed and reports findings.
-//! That lets it be shared between the Chud app (which wraps it with UI /
-//! quarantine actions) and a standalone `modscan` CLI, and makes it trivial
-//! to unit test and fuzz in isolation.
+//! Intentionally PURE: no Tauri, no networking, no filesystem writes — it only
+//! reads the bytes it's handed and reports findings. Shared between the Chud
+//! app and a standalone `modscan` CLI, and trivial to unit test/fuzz in isolation.
 //!
-//! `scan_bytes` is the only entry point that matters: hand it a whole file's
-//! bytes, get back a `ScanReport`. It never panics and never performs
-//! unbounded work — every read is capped (see the `MAX_*` constants below),
-//! so a hostile .fantome can't be used to DoS the scanner itself.
+//! `scan_bytes` is the only entry point: hand it a file's bytes, get a
+//! `ScanReport`. Never panics, never does unbounded work — every read is capped
+//! (see `MAX_*` below), so a hostile .fantome can't DoS the scanner itself.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -36,11 +33,10 @@ pub const MAX_TOTAL_UNCOMPRESSED: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB
 /// enormous entry can trip this even if the archive as a whole looks small.
 pub const MAX_SINGLE_ENTRY_UNCOMPRESSED: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
-/// Uncompressed/compressed ratio past which an entry is "too good to be
-/// real cosmetic data" (DEFLATE tops out around ~1000:1 on degenerate input
-/// like a run of zeros; legit textures/wads never get close to 200:1).
-/// Entries under 1 KiB compressed are ignored — tiny files hit silly ratios
-/// (e.g. a 200-byte file of zeros) without being a bomb.
+/// Uncompressed/compressed ratio past which an entry is "too good to be real
+/// cosmetic data" (DEFLATE tops ~1000:1 on degenerate input like zero-runs;
+/// legit textures/wads never approach 200:1). Entries under 1 KiB compressed
+/// are ignored — tiny files hit silly ratios without being a bomb.
 pub const MAX_COMPRESSION_RATIO: u64 = 200;
 
 /// How many leading bytes of an entry's *decompressed* stream we sniff for a
@@ -631,8 +627,7 @@ mod tests {
 
     #[test]
     fn compression_bomb_entry_is_suspicious() {
-        // 5 MB of zeros compresses to a tiny STORE... wait, STORE doesn't
-        // compress at all, so we need DEFLATE here to get a real ratio.
+        // STORE doesn't compress at all, so DEFLATE is needed here for a real ratio.
         let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         writer.start_file("WAD/zeros.bin", opts).unwrap();

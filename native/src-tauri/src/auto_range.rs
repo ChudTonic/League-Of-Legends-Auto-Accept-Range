@@ -1,11 +1,10 @@
 //! Auto-Range: hold the "show range" key while a live League game is focused,
-//! refreshing periodically so the indicator stays drawn. A dedicated thread
-//! does the timing-sensitive hold/refresh; the ranked kill-switch it obeys
-//! (`AppState::injection_blocked`) is maintained by the ALWAYS-RUNNING
-//! safety monitor (`safety_manager::spawn_safety_monitor`) — it used to live
-//! here, which meant ranked detection only existed while Auto-Range was
-//! armed (P0-A). The key is released whenever the game loses focus or a
-//! ranked game is detected. Operates openly — no evasion.
+//! refreshing periodically so the indicator stays drawn. A dedicated thread does
+//! the timing-sensitive hold/refresh; the ranked kill-switch it obeys
+//! (`AppState::injection_blocked`) is maintained by the ALWAYS-RUNNING safety
+//! monitor (`safety_manager::spawn_safety_monitor`), not by this module — ranked
+//! detection must not depend on Auto-Range being armed. Key releases on focus
+//! loss or ranked detection. Operates openly — no evasion.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -23,28 +22,23 @@ pub fn start(app: AppHandle, state: Arc<AppState>, generation: u64) {
     std::thread::spawn(move || hold_loop(app, state, generation));
 }
 
-/// Track in-game chat open/close so we release the key while the user types
-/// (otherwise the held/refreshed range key would spam characters into chat).
-/// Enter toggles chat, Esc closes it — only counted while the game is focused.
+/// Track in-game chat open/close so the range key releases while the user types.
+/// Enter toggles chat, Esc closes it — only while the game is focused.
 ///
-/// CRITICAL: this runs inside `rdev`'s low-level Windows keyboard hook
-/// (`WH_KEYBOARD_LL`), which is called synchronously on the OS input thread for
-/// EVERY keystroke system-wide. It must return almost instantly and must NOT
-/// make cross-process Win32 calls (e.g. `GetClassNameW` on the game window) —
-/// doing so can stall all keyboard input for the whole machine if the game's
-/// UI thread is busy (loading screen, alt-tab, Vanguard). So instead of probing
-/// focus here, we read `state.game_focused`, which the tool loops publish every
-/// tick. The hook therefore only touches lock-free atomics.
+/// SAFETY: runs inside `rdev`'s low-level Windows keyboard hook (`WH_KEYBOARD_LL`),
+/// called synchronously on the OS input thread for every keystroke system-wide.
+/// Must return instantly and must NOT make cross-process Win32 calls (e.g.
+/// `GetClassNameW`) — that can stall system-wide input if the game's UI thread is
+/// busy. So it reads `state.game_focused` (published by the tool loops) instead of
+/// probing focus itself — lock-free atomics only.
 pub(crate) fn start_chat_listener(state: Arc<AppState>) {
     std::thread::spawn(move || {
-        // Windows key auto-repeat delivers repeated KeyPress(Return) events to
-        // the hook while Enter is held down, which would otherwise toggle
-        // chat_open on every repeat instead of once per press. Track the
-        // down/up edge so only the first press of a hold toggles.
+        // Track the down/up edge so key-repeat doesn't re-toggle chat_open on
+        // every repeated KeyPress(Return) while Enter is held.
         let enter_down = std::cell::Cell::new(false);
         let callback = move |event: rdev::Event| {
-            // Handled before the active gate so a release while disarmed is
-            // never missed (which would otherwise wedge the edge "down").
+            // Checked before the active gate so a release while disarmed isn't
+            // missed, which would wedge the edge "down".
             if let rdev::EventType::KeyRelease(rdev::Key::Return) = event.event_type {
                 enter_down.set(false);
             }

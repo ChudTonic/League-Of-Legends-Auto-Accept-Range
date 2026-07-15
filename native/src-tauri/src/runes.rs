@@ -1,14 +1,12 @@
 //! Rune / summoner-spell / item-build auto-import.
 //!
-//! No Riot Web API key is involved. Two ungated layers do all the work:
-//!   * **LCU** (local client API, lockfile auth) writes the rune page, the
-//!     champ-select summoner spells, and the item set — the exact mechanism
-//!     OP.GG/Blitz/Championify use (a live client here already had an
-//!     "OP.GG aram …" page, confirming the endpoint + shape).
-//!   * A **Cloudflare Worker** (`runes_endpoint`) fetches the current-patch
-//!     "best" build from a stats aggregator (u.gg / lolalytics), normalizes it
-//!     to the [`RuneBuild`] shape below, and caches it. The client is decoupled
-//!     from whichever site the Worker scrapes — it only speaks this contract:
+//! No Riot Web API key involved. Two layers:
+//!   * **LCU** (lockfile auth) writes the rune page, champ-select summoner
+//!     spells, and item set — the same mechanism OP.GG/Blitz/Championify use.
+//!   * A **Cloudflare Worker** (`runes_endpoint`) fetches the current-patch best
+//!     build from a stats aggregator, normalizes it to the [`RuneBuild`] shape,
+//!     and caches it. The client is decoupled from whatever the Worker scrapes —
+//!     it only speaks this contract:
 //!
 //! ```json
 //! { "name": "Ahri — mid",
@@ -28,9 +26,8 @@ use serde_json::{json, Value};
 
 use crate::lcu::{self, Auth};
 
-/// Rune page name prefix — we reuse a single page tagged this way so imports
-/// never pile up pages or clobber the user's own (their non-Chud pages are
-/// left untouched; only a slot for OURS is reclaimed when at cap).
+/// Rune page name prefix — reuses a single tagged page so imports never pile up
+/// or clobber the user's own pages; only OUR slot is reclaimed at cap.
 const PAGE_PREFIX: &str = "Chud";
 
 /// Normalized build, produced by the Worker, applied by the client.
@@ -77,11 +74,9 @@ impl RuneBuild {
 /// Worker. `role` is one of top/jungle/mid/bot/support (empty = let the Worker
 /// pick the champ's most-played role). Returns `None` on any failure.
 ///
-/// `http` MUST be an external client (`net::build_external_client`), NOT the
-/// LCU client the rest of this module's functions take — this is the one
-/// call in the auto-import flow that leaves the machine (P0-B: it used to
-/// wrongly share the LCU's `danger_accept_invalid_certs` client with real
-/// internet requests). `allowed` gates the endpoint host.
+/// `http` MUST be an external client (`net::build_external_client`), NOT the LCU
+/// client the rest of this module takes — this is the one call in the
+/// auto-import flow that leaves the machine. `allowed` gates the endpoint host.
 pub async fn fetch_build(
     http: &reqwest::Client,
     allowed: &std::collections::HashSet<String>,
@@ -94,8 +89,7 @@ pub async fn fetch_build(
     if runes_endpoint.trim().is_empty() {
         return None;
     }
-    // Patch is intentionally NOT sent — the Worker resolves the current patch
-    // itself (from Data Dragon) so the client can't send a stale one.
+    // Patch intentionally not sent — the Worker resolves it itself so the client can't send a stale one.
     let url = format!(
         "{}?champ={champion_id}&role={}&mode={}&sort={}",
         runes_endpoint.trim_end_matches('/'),
@@ -211,11 +205,9 @@ async fn apply_items(http: &reqwest::Client, auth: &Auth, name: &str, blocks: &I
         .is_some()
 }
 
-/// Read the champion you've locked/hovered, your assigned role, and the game
-/// mode ("aram" | "") from the live champ-select session. ARAM has its own rune
-/// meta (detected via `benchEnabled`, which only ARAM sets), so we tell the
-/// Worker to pull ARAM data. Returns `None` when not in champ select or no
-/// champ is picked yet.
+/// Read the locked/hovered champion, assigned role, and game mode ("aram" | "")
+/// from the live champ-select session (ARAM detected via `benchEnabled`, which
+/// only ARAM sets). `None` when not in champ select or no champ picked yet.
 pub async fn locked_champ_and_role(http: &reqwest::Client, auth: &Auth) -> Option<(i64, String, String)> {
     let session = lcu::get_json(http, auth, "/lol-champ-select/v1/session").await?;
     let my_cell = session.get("localPlayerCellId").and_then(Value::as_i64)?;
@@ -242,14 +234,13 @@ fn normalize_role(pos: &str) -> String {
     .to_string()
 }
 
-/// End-to-end: detect the locked champion + role, fetch the current-patch best
-/// build from the Worker, and apply it. Returns what was applied (all-false if
-/// not in champ select, no champ picked, or the Worker had no build).
+/// End-to-end: detect locked champion + role, fetch the current-patch best build
+/// from the Worker, and apply it. All-false if not in champ select, no champ
+/// picked, or the Worker had no build.
 ///
-/// Takes TWO clients, deliberately: `lcu_http` (`lcu::build_lcu_client`) for
-/// the champ-select read + apply-to-client writes, and `ext_http`
-/// (`net::build_external_client`) for the one request that leaves the
-/// machine (the Worker fetch) — see `fetch_build`'s doc comment.
+/// Takes TWO clients deliberately: `lcu_http` for champ-select read + apply
+/// writes, `ext_http` for the one request that leaves the machine (see
+/// `fetch_build`'s doc comment).
 pub async fn import_now(
     lcu_http: &reqwest::Client,
     auth: &Auth,

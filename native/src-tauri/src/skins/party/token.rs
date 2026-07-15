@@ -1,27 +1,22 @@
 //! Party token codec (S6) — ported from `party/protocol/token_codec.py`.
 //!
-//! Wire layout is byte-exact with the Python original (and therefore with
-//! any peer still holding a Python-issued token): before compression, v2 is
-//! `>BIQ` (version: u8, timestamp: u32 big-endian, summoner_id: u64
-//! big-endian) followed by the 32-byte room secret — 45 bytes total —
-//! zlib-compressed and urlsafe-base64 encoded with padding stripped. v1
-//! (legacy P2P) inserts a 2x u16 ip/port pair between summoner_id and the
-//! secret; decode still accepts it for back-compat, encode never produces it.
+//! Wire layout is byte-exact with Python (so any peer holding a
+//! Python-issued token still decodes): before compression, v2 is `>BIQ`
+//! (version u8, timestamp u32 BE, summoner_id u64 BE) + 32-byte room secret
+//! — 45 bytes total — zlib-compressed and urlsafe-base64 encoded, padding
+//! stripped. v1 (legacy P2P) inserts a 2x u16 ip/port pair between
+//! summoner_id and the secret; decode still accepts it, encode never produces it.
 //!
-//! IMPORTANT — the 32-byte `room_secret` is NOT an encryption key and NOTHING
-//! in this codebase encrypts party payloads with it. Its ONLY job is to make
-//! the relay room name unguessable: `relay::compute_room_key` does
-//! `sha256(host_id + room_secret)[:32]`, so a token holder and the host
-//! independently derive the same private room address. Party frames travel to
-//! the relay as plaintext JSON (protected only by TLS in transit and, as of
-//! P0-F, carrying an ephemeral id + display name + cosmetic skin pick — no
-//! summoner id); their integrity is guaranteed by ed25519 signatures
-//! (`party::sig`), not by any cipher here. See `docs/PRIVACY-PARTY.md`.
+//! IMPORTANT — the 32-byte `room_secret` is NOT an encryption key; nothing
+//! here encrypts party payloads with it. Its only job is making the relay
+//! room name unguessable: `relay::compute_room_key` does
+//! `sha256(host_id + room_secret)[:32]`. Party frames travel to the relay as
+//! plaintext JSON (TLS in transit only); their integrity is guaranteed by
+//! ed25519 signatures (`party::sig`), not by any cipher here.
 //!
-//! The ONLY branded surface is the ASCII `"CHUD:"` prefix
-//! (`docs/SKINS_PORT.md` §1); the binary layout matches the upstream codec, so
-//! a token minted by either side decodes on the other once the prefix is
-//! stripped.
+//! The ONLY branded surface is the ASCII `"CHUD:"` prefix; the binary layout
+//! matches the upstream codec, so a token minted by either side decodes on
+//! the other once the prefix is stripped.
 
 #![allow(dead_code)]
 
@@ -45,9 +40,8 @@ pub struct TokenData {
     pub version: u8,
     pub timestamp: u32,
     /// Historically a real LCU summoner id. As of P0-F, `party::manager`'s
-    /// `enable()` instead puts a random per-`enable()` EPHEMERAL id here
-    /// (see its doc comment) — this module's wire layout and field name are
-    /// unchanged, only the caller-supplied value's meaning is.
+    /// `enable()` puts a random per-`enable()` EPHEMERAL id here instead —
+    /// wire layout and field name are unchanged, only the value's meaning.
     pub summoner_id: u64,
     /// 32-byte room-derivation secret — hashed into the relay room name, never
     /// used to encrypt anything (see this module's doc comment).
@@ -55,9 +49,8 @@ pub struct TokenData {
 }
 
 impl TokenData {
-    /// `PartyToken.is_expired` — `now_unix` is the caller's
-    /// `SystemTime::now()` unix-seconds snapshot (kept a parameter so this
-    /// stays deterministic/testable rather than sampling the clock itself).
+    /// `now_unix` is the caller's unix-seconds snapshot, kept a parameter so
+    /// this stays deterministic/testable rather than sampling the clock itself.
     pub fn is_expired(&self, now_unix: u64) -> bool {
         now_unix > self.timestamp as u64 + TOKEN_EXPIRY_SECONDS
     }
@@ -86,9 +79,8 @@ impl std::fmt::Display for TokenError {
 
 impl std::error::Error for TokenError {}
 
-/// `PartyToken.encode` — `timestamp` is the token creation time (Unix
-/// seconds); the caller passes `SystemTime::now()` (see this module's doc
-/// comment on why the clock read isn't inlined here).
+/// `timestamp` is the token creation time (Unix seconds); the caller passes
+/// `SystemTime::now()`.
 pub fn encode_token(summoner_id: u64, room_secret: &[u8; 32], timestamp: u32) -> String {
     let mut data = Vec::with_capacity(13 + 32);
     data.push(TOKEN_VERSION);
@@ -96,12 +88,9 @@ pub fn encode_token(summoner_id: u64, room_secret: &[u8; 32], timestamp: u32) ->
     data.extend_from_slice(&summoner_id.to_be_bytes());
     data.extend_from_slice(room_secret);
 
-    // zlib level 9, matching `zlib.compress(data, level=9)` — the compressed
-    // bytes need not match Python byte-for-byte (different zlib builds can
-    // emit different deflate streams for the same input/level); what matters
-    // for wire-compat is that `decode_token` on either side can inflate
-    // whatever the other side produced, which any standard zlib stream
-    // guarantees.
+    // zlib level 9, matching Python's `zlib.compress(data, level=9)` — the
+    // compressed bytes need not match byte-for-byte; what matters is that
+    // `decode_token` on either side can inflate what the other produced.
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(9));
     encoder.write_all(&data).expect("in-memory zlib write cannot fail");
     let compressed = encoder.finish().expect("in-memory zlib finish cannot fail");
@@ -204,12 +193,9 @@ mod tests {
         assert_eq!(decoded.summoner_id, 42);
     }
 
-    /// Known-vector cross-check: this exact string was produced by the
-    /// Python `token_codec.py` (with the prefix swapped to `CHUD:`) using
-    /// `struct.pack(">BIQ", 2, 1700000000, 123456789) + bytes(range(32))`,
-    /// `zlib.compress(level=9)`, `base64.urlsafe_b64encode` — proving this
-    /// port decodes a Python-issued token byte-for-byte, not just its own
-    /// output.
+    /// Known-vector cross-check: this exact string was produced by Python's
+    /// `token_codec.py` (prefix swapped to `CHUD:`), proving this port
+    /// decodes a Python-issued token byte-for-byte, not just its own output.
     #[test]
     fn decodes_known_python_issued_v2_vector() {
         let token = "CHUD:eNpjSg3-yAAC7NFnRRkYmZhZWNnYOTi5uHl4-fgFBIWERUTFxCUkpaRlZOXkAYgKBOA";
@@ -221,12 +207,9 @@ mod tests {
         assert_eq!(decoded.room_secret.to_vec(), expected_key);
     }
 
-    /// Same cross-check for the legacy v1 layout — note `token_codec.py`'s
-    /// decode only `struct.unpack(">BIQHH", data[:17])`s the header, then
-    /// reads the key from `data[25:57]`, leaving an 8-byte gap (`[17:25]`)
-    /// it never parses; this vector reproduces that gap (zero-filled) so it
-    /// matches what the Python decoder actually expects on the wire (no v1
-    /// encoder exists anymore in either codebase — decode-only back-compat).
+    /// Same cross-check for the legacy v1 layout — Python's decoder leaves
+    /// an 8-byte gap (`[17:25]`) it never parses; this vector reproduces
+    /// that gap (zero-filled) to match the wire format (decode-only back-compat).
     #[test]
     fn decodes_known_python_issued_v1_vector() {
         let token = "CHUD:eNpjTA3-yAAC7NFnRRmQASMTMwsrGzsHJxc3Dy8fv4CgkLCIqJi4hKSUtIysnDwAqxEE3w";

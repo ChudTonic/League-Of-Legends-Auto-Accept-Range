@@ -1,21 +1,16 @@
 //! Swiftplay/Brawl pipeline — ported from `threads/handlers/swiftplay_handler.py`
-//! (`SwiftplayHandler`) and the Swiftplay-specific branches of
-//! `threads/handlers/lobby_processor.py` (`LobbyProcessor`).
+//! (`SwiftplayHandler`) and the Swiftplay branches of `lobby_processor.py`.
 //!
-//! Queue/mode magic values preserved verbatim: queue 480 + `{SWIFTPLAY, BRAWL}`
-//! (`lcu_ext::SWIFTPLAY_QUEUE_ID`/`SWIFTPLAY_MODES`, S2). The core idea: since
-//! Swiftplay locks the player's champion in the LOBBY (before ChampSelect even
-//! starts) and queues near-instantly, injection can't wait for the normal
-//! loadout-ticker deadline — skins are extracted during Matchmaking so the
-//! overlay build at GameStart is (close to) instant.
+//! Queue/mode magic values preserved verbatim: queue 480 + `{SWIFTPLAY, BRAWL}`.
+//! Core idea: Swiftplay locks the player's champion in the LOBBY (before
+//! ChampSelect starts) and queues near-instantly, so injection can't wait
+//! for the normal loadout-ticker deadline — skins are extracted during
+//! Matchmaking so the overlay build at GameStart is (close to) instant.
 //!
-//! TOCTOU FIX (per the fix list): Python's `run_swiftplay_overlay` guarded
-//! reentrancy with a plain `threading.Lock` while OTHER call sites
-//! (`phase_handler.py`'s ChampSelect-Swiftplay branch) separately checked
-//! `self._overlay_lock.locked()` to decide whether to skip — a classic
-//! check-then-act race (the lock could be acquired between the check and the
-//! decision). `run_overlay_if_ready` below uses `tokio::sync::Mutex::try_lock`
-//! as the ONE atomic gate; nothing else peeks at its state to make a decision.
+//! TOCTOU FIX: Python guarded reentrancy with a plain `threading.Lock` while
+//! OTHER call sites separately checked `.locked()` to decide whether to
+//! skip — a classic check-then-act race. `run_overlay_if_ready` uses
+//! `tokio::sync::Mutex::try_lock` as the ONE atomic gate instead.
 
 #![allow(dead_code)] // consumed by phase.rs wiring
 
@@ -37,9 +32,7 @@ use crate::skins::SkinsState;
 use crate::{AppState, LockExt};
 
 /// Per-process Swiftplay bookkeeping that used to live as instance fields on
-/// Python's `SwiftplayHandler` (which was itself a long-lived singleton
-/// object, so a process-wide static here is the direct equivalent — see
-/// `lcu_ext::shared_cache`'s doc comment for the same pattern).
+/// Python's `SwiftplayHandler` singleton — a process-wide static is the direct equivalent.
 struct SwiftplayRuntime {
     injection_triggered: bool,
     overlay_done: bool,
@@ -61,9 +54,8 @@ fn runtime() -> &'static Mutex<SwiftplayRuntime> {
     RUNTIME.get_or_init(|| Mutex::new(SwiftplayRuntime::default()))
 }
 
-/// Dedicated async lock guarding `run_overlay_if_ready` reentrancy — see this
-/// module's doc comment for why it replaces the Python original's
-/// check-then-act `.locked()` race.
+/// Dedicated async lock guarding `run_overlay_if_ready` reentrancy (see
+/// module doc for the check-then-act race this replaces).
 static OVERLAY_LOCK: OnceLock<TokioMutex<()>> = OnceLock::new();
 fn overlay_lock() -> &'static TokioMutex<()> {
     OVERLAY_LOCK.get_or_init(|| TokioMutex::new(()))
@@ -85,11 +77,9 @@ pub fn mark_champion_changed(champion_id: i64) {
 // `SwiftplayHandler.handle_swiftplay_lobby`/`_process_swiftplay_champion_selection`.
 // ---------------------------------------------------------------------
 
-/// Called on a `Lobby` phase observation (ported from the lobby-mode-detection
-/// half of `LobbyProcessor.monitor_lobby_state`). Detects Swiftplay/Brawl,
-/// records the champion selection already made in the lobby (Swiftplay locks
-/// before ChampSelect even starts), and runs exit cleanup on a swiftplay ->
-/// non-swiftplay transition.
+/// Called on a `Lobby` phase observation. Detects Swiftplay/Brawl, records
+/// the champion selection already made in the lobby (locks before
+/// ChampSelect starts), and runs exit cleanup on a swiftplay -> non-swiftplay transition.
 pub async fn on_lobby_entered(app: AppHandle, skins: Arc<SkinsState>) {
     let _ = &app;
     let Some(auth) = lcu::cached_auth() else { return };
@@ -131,11 +121,9 @@ fn apply_champion_selection(skins: &Arc<SkinsState>, sel: lcu_ext::ChampionSelec
 }
 
 // ---------------------------------------------------------------------
-// ChampSelect-in-Swiftplay catch-up — ported from `phase_handler.py`'s
-// `phase == "ChampSelect" and self.state.is_swiftplay_mode` branch. Called
-// from `phase.rs::champ_select_entry` when it detects Swiftplay BEFORE
-// running the normal per-game reset (Swiftplay already locked its champion
-// in the lobby; the normal reset would wipe that lock).
+// ChampSelect-in-Swiftplay catch-up — called from `phase.rs::champ_select_entry`
+// when it detects Swiftplay BEFORE running the normal per-game reset
+// (Swiftplay already locked its champion in the lobby; a normal reset would wipe that lock).
 // ---------------------------------------------------------------------
 
 pub fn on_champ_select_in_swiftplay(app: AppHandle, skins: Arc<SkinsState>) {
@@ -170,14 +158,11 @@ pub fn on_champ_select_in_swiftplay(app: AppHandle, skins: Arc<SkinsState>) {
 // `SwiftplayHandler.monitor_swiftplay_matchmaking` + `trigger_swiftplay_injection`.
 // ---------------------------------------------------------------------
 
-/// Called on a `Matchmaking` phase observation. SIMPLIFICATION (flagged for
-/// the lead): Python gated extraction on the lobby's matchmaking
-/// `searchState` transitioning to `"Searching"` (polled continuously,
-/// independent of the gameflow phase); `phase.rs` only observes discrete
-/// gameflow-phase transitions, so this fires once per `Matchmaking` phase
-/// entry instead. In practice the phase flips to `Matchmaking` at essentially
-/// the same moment `searchState` becomes `"Searching"`, so this should be
-/// behaviorally equivalent for the common case.
+/// Called on a `Matchmaking` phase observation. SIMPLIFICATION: Python gated
+/// extraction on the lobby's matchmaking `searchState` transitioning to
+/// `"Searching"` (polled continuously); `phase.rs` only observes discrete
+/// gameflow-phase transitions, so this fires once per `Matchmaking` entry
+/// instead — behaviorally equivalent since both fire at essentially the same moment.
 pub async fn on_matchmaking_started(app: AppHandle, skins: Arc<SkinsState>) {
     let _ = &app;
     if !skins.shared.lock_safe().is_swiftplay_mode {
@@ -196,11 +181,9 @@ pub async fn on_matchmaking_started(app: AppHandle, skins: Arc<SkinsState>) {
     extract_tracked_skins(&skins).await;
 }
 
-/// Ported from `trigger_swiftplay_injection`: extract every tracked
-/// champion's skin ZIP into the injection mods directory now, so the overlay
-/// build at GameStart only has to run `mkoverlay`/`runoverlay` (no ZIP
-/// resolution) — the whole point of doing this during Matchmaking instead of
-/// waiting for GameStart.
+/// Extract every tracked champion's skin ZIP into the injection mods
+/// directory now, so the overlay build at GameStart only has to run
+/// `mkoverlay`/`runoverlay` (no ZIP resolution).
 async fn extract_tracked_skins(skins: &Arc<SkinsState>) {
     let tracking = {
         let shared = skins.shared.lock_safe();
@@ -212,9 +195,7 @@ async fn extract_tracked_skins(skins: &Arc<SkinsState>) {
     }
 
     // Prune champions no longer present in the lobby's player slots (a
-    // champion swap after the initial tracking snapshot) — ported from
-    // `_get_active_lobby_champion_ids` + the pruning step in
-    // `trigger_swiftplay_injection`.
+    // champion swap after the initial tracking snapshot).
     let active_ids = match lcu::cached_auth() {
         Some(auth) => {
             let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
@@ -295,18 +276,14 @@ pub async fn on_game_start(app: AppHandle, skins: Arc<SkinsState>) {
     run_overlay_if_ready(app, skins).await;
 }
 
-/// See this module's doc comment for the TOCTOU fix this implements.
+/// See module doc for the TOCTOU fix this implements.
 ///
-/// DEVIATION (still true, but the data-loss part is fixed — see
-/// `injector.rs::inject_skin`'s "CLEAN ORDERING CONTRACT"): `InjectionManager`
-/// has no low-level "run an overlay for an arbitrary pre-extracted mod-folder
-/// list, no forced primary skin" entry point, so one tracked (champion, skin)
-/// pair is re-resolved as `inject_skin_immediately`'s primary `skin_name`
-/// (redundant work, but correct) and every other already-extracted folder
-/// rides along as `extra_mod_names`. `extract_tracked_skins` already cleans
-/// `mods_dir` before staging any of them, and `inject_skin` no longer
-/// re-cleans once it sees `extra_mod_names` is non-empty, so a multi-champion
-/// Swiftplay lobby's other extracted skins now survive into this overlay.
+/// `InjectionManager` has no low-level "run an overlay for an arbitrary
+/// pre-extracted mod-folder list, no forced primary skin" entry point, so
+/// one tracked (champion, skin) pair is re-resolved as
+/// `inject_skin_immediately`'s primary `skin_name` (redundant work, but
+/// correct) and every other already-extracted folder rides along as
+/// `extra_mod_names` — see `injector.rs::inject_skin`'s CLEAN ORDERING CONTRACT.
 async fn run_overlay_if_ready(app: AppHandle, skins: Arc<SkinsState>) {
     let Ok(_guard) = overlay_lock().try_lock() else {
         log_info!("[swiftplay] Overlay already running - skipping duplicate call");
@@ -333,10 +310,9 @@ async fn run_overlay_if_ready(app: AppHandle, skins: Arc<SkinsState>) {
         return;
     };
 
-    // Resolve the League "Game" directory lazily and set it every overlay
-    // build (cheap, and the install dir can change between client launches)
-    // — `mkoverlay`'s `--game:<path>` is unset without it, making injection a
-    // silent no-op.
+    // Resolve the League "Game" directory and set it every overlay build
+    // (cheap, and it can change between launches) — without it `mkoverlay`'s
+    // `--game:<path>` is unset, making injection a silent no-op.
     let Some(game_dir) = lcu_ext::resolve_game_dir() else {
         log_warn!("[swiftplay] Could not resolve League game directory (client not running?) - skipping overlay injection");
         return;
@@ -369,11 +345,10 @@ async fn run_overlay_if_ready(app: AppHandle, skins: Arc<SkinsState>) {
 // Exit cleanup — ported from `SwiftplayHandler.cleanup_swiftplay_exit`.
 // ---------------------------------------------------------------------
 
-/// Clear Swiftplay-specific state when leaving the lobby/mode. NOTE (per the
-/// fix list's "preserving the still-in-same-Swiftplay-queue case"): this must
-/// only be called on an actual swiftplay -> non-swiftplay transition (see
-/// `on_lobby_entered`'s `was_swiftplay && !mode.is_swiftplay` guard) — never
-/// on every poll, or a transient lobby-data hiccup would wipe tracking mid-queue.
+/// Clear Swiftplay-specific state when leaving the lobby/mode. Must only be
+/// called on an actual swiftplay -> non-swiftplay transition (see
+/// `on_lobby_entered`'s guard) — never on every poll, or a transient
+/// lobby-data hiccup would wipe tracking mid-queue.
 pub fn cleanup_swiftplay_exit(skins: &Arc<SkinsState>) {
     log_info!("[swiftplay] Clearing Swiftplay skin tracking - leaving Swiftplay mode");
     {

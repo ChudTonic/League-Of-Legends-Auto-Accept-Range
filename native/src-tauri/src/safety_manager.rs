@@ -1,22 +1,17 @@
-//! Central injection safety gate (P0-A).
+//! Central injection safety gate.
 //!
-//! Every skin-injection side effect — overlay **build** (mkoverlay), game
-//! **suspend** (NtSuspendProcess), LCU **patch** (forcing a skin selection),
-//! and **run-overlay** (runoverlay hook) — must pass
-//! [`evaluate_injection_policy`] immediately before it executes. The policy
-//! is evaluated from live backend state only (config on disk, the always-on
-//! gameflow monitor, tool presence); nothing here trusts the frontend.
+//! Every skin-injection side effect — overlay build, game suspend, LCU patch,
+//! and run-overlay — must pass [`evaluate_injection_policy`] immediately before
+//! it executes. Evaluated from live backend state only; nothing here trusts the frontend.
 //!
 //! Fail-closed by design:
 //!   * no monitor heartbeat / stale snapshot  -> `IntegrityFailed`
 //!   * live game whose queue can't be classified -> `UnknownQueue`
 //!   * no policy hook wired into a subsystem  -> that subsystem denies.
 //!
-//! The always-on monitor ([`spawn_safety_monitor`]) replaces the old
-//! Auto-Range-scoped `ranked_monitor` in `auto_range.rs`: it runs from
-//! `setup()` for the whole app lifetime, so ranked/queue blocking works even
-//! if Auto-Range has never been armed. It still maintains the
-//! `AppState::injection_blocked` atomic Auto-Range reads each tick.
+//! [`spawn_safety_monitor`] runs from `setup()` for the whole app lifetime, so
+//! ranked/queue blocking works even if Auto-Range has never been armed; it
+//! maintains the `AppState::injection_blocked` atomic Auto-Range reads each tick.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -28,13 +23,13 @@ use tauri::AppHandle;
 use crate::{emit_state, lcu, safety, AppState, LockExt};
 
 /// Version of the skin-injection risk disclosure the user must acknowledge.
-/// Bump this whenever the disclosure text changes materially — everyone is
-/// then re-gated behind `ConsentMissing` until they re-accept.
+/// Bump whenever the disclosure text changes materially to re-gate everyone
+/// behind `ConsentMissing` until they re-accept.
 pub const CURRENT_SKINS_ACK_VERSION: u32 = 1;
 
 /// The monitor beats every `safety.check_interval` (>= 1s, default 2.5s). A
-/// snapshot older than this means the monitor is dead or wedged — the gate
-/// can no longer be trusted, so injection fails closed (`IntegrityFailed`).
+/// snapshot older than this means the monitor is dead/wedged, so injection
+/// fails closed (`IntegrityFailed`).
 pub const SNAPSHOT_STALE_AFTER: Duration = Duration::from_secs(15);
 
 /// Gameflow phases during which injection operations are legitimate at all.
@@ -284,8 +279,8 @@ pub fn decide(i: &PolicyInputs) -> InjectionDecision {
             QueueClass::Unranked => {}
         }
     }
-    // Only the entrypoint op contends for the job slot; Suspend/LcuPatch/
-    // RunOverlay run INSIDE the active job and must not deny themselves.
+    // Only the entrypoint op contends for the job slot; inner ops run INSIDE
+    // the active job and must not deny themselves.
     if i.op == InjectionOp::Build && i.injection_in_progress {
         return InjectionDecision::Denied(InjectionDenial::ActiveJob);
     }
@@ -303,13 +298,11 @@ pub fn decide(i: &PolicyInputs) -> InjectionDecision {
 /// Evaluate the policy for one operation from live backend state. Called
 /// immediately before every build, suspend, LCU patch, and run-overlay.
 ///
-/// LOCKING NOTE: this takes only `state.config` and `state.safety.snapshot`
-/// (both short leaf locks). It deliberately does NOT touch
-/// `state.skins_injection` — the hook is invoked from inside the injection
-/// pipeline while `InjectionManager::inner` is held, and lock-ordering
-/// against `skins_injection` from there would deadlock (`ActiveJob` for the
-/// in-flight case is enforced by `InjectionManager` itself, which owns the
-/// in-progress flag).
+/// LOCKING NOTE: only takes `state.config`/`state.safety.snapshot` (short leaf
+/// locks) — deliberately does NOT touch `state.skins_injection`, since this runs
+/// inside the injection pipeline while `InjectionManager::inner` is held, and
+/// locking `skins_injection` from there would deadlock. `ActiveJob` for the
+/// in-flight case is enforced by `InjectionManager` itself instead.
 pub fn evaluate_injection_policy(state: &AppState, op: InjectionOp) -> InjectionDecision {
     let (skins_enabled, ack_version, block_in_ranked) = {
         let c = state.config.lock_safe();
@@ -393,9 +386,8 @@ pub fn spawn_safety_monitor(app: AppHandle, state: Arc<AppState>) {
                 None => GameflowSnapshot { league_reachable: false, updated: Some(Instant::now()), ..Default::default() },
             };
 
-            // Ranked kill-switch for Auto-Range (a key-holder, not skin
-            // injection): block only during a live game whose queue is ranked
-            // or unknown. Client unreachable => no live game => don't block.
+            // Ranked kill-switch for Auto-Range: block only during a live game
+            // whose queue is ranked/unknown. Unreachable client never blocks.
             let live = snap
                 .phase
                 .as_deref()
@@ -486,9 +478,7 @@ mod tests {
 
     #[test]
     fn no_snapshot_ever_published_fails_closed_as_integrity() {
-        // "Auto-Range has never been launched" regression shape: with the old
-        // design there was no monitor at all -> nothing gated. Now: an absent
-        // snapshot must DENY, never allow.
+        // Regression guard: an absent snapshot must DENY, never allow.
         let mut i = allowed_inputs();
         i.snapshot.updated = None;
         assert_eq!(denial_of(&i), Some(InjectionDenial::IntegrityFailed));
@@ -592,11 +582,9 @@ mod tests {
         }
     }
 
-    /// Concurrent phase changes: one thread flips the published snapshot
-    /// between an allowed state and a ranked state while readers evaluate
-    /// continuously. Every observed decision must be exactly one of the two
-    /// legal outcomes (Allowed or RankedQueue) — never a torn/other state —
-    /// and both outcomes must actually be observed.
+    /// One thread flips the published snapshot between allowed/ranked while
+    /// readers evaluate continuously — every decision must be exactly one of
+    /// the two legal outcomes, never a torn/other state.
     #[test]
     fn concurrent_phase_changes_never_produce_torn_decisions() {
         let mgr = Arc::new(SafetyManager::new());

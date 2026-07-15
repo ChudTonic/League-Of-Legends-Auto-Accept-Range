@@ -1,5 +1,4 @@
-//! Thin Windows helpers: admin check, League-game focus detection, and
-//! relaunch-as-administrator (for the injection tools).
+//! Thin Windows helpers: admin check, League-game focus detection, relaunch-as-admin.
 
 #[cfg(windows)]
 pub fn is_admin() -> bool {
@@ -51,9 +50,8 @@ pub fn relaunch_as_admin() {
     }
 }
 
-/// Open a URL in the user's default browser via the shell (`ShellExecuteW`
-/// "open"). Used for the "View on RuneForge" attribution link — the caller
-/// must validate the URL first (see `open_external_url` in `lib.rs`).
+/// Open a URL in the default browser via `ShellExecuteW` "open". Caller must
+/// validate the URL first (see `open_external_url` in `lib.rs`).
 #[cfg(windows)]
 pub fn open_in_browser(url: &str) {
     use std::os::windows::ffi::OsStrExt;

@@ -1,18 +1,12 @@
-//! Bridge HTTP routes (S4) — ported from `pengu\core\http_handler.py`
-//! (`HTTPHandler`): `/bridge-port`, `/port` (legacy), `/preview/{champion}/
-//! {skin}/{chroma}`, `/asset/{path}`, `/plugin/{name}/{file}`.
+//! Bridge HTTP routes (S4) — ported from `pengu\core\http_handler.py`:
+//! `/bridge-port`, `/port` (legacy), `/preview/{champion}/{skin}/{chroma}`,
+//! `/asset/{path}`, `/plugin/{name}/{file}`.
 //!
-//! Traversal hardening deliberately strengthens the Python original: Python's
-//! `_is_safe_path` calls `Path.resolve()` (which lexically collapses `..`
-//! even on a non-existent path) and checks the result still starts with the
-//! base directory. Rust's `Path::canonicalize()` requires the path to
-//! *exist*, so instead every path SEGMENT taken from the request is rejected
-//! outright if it's empty, `.`/`..`, or contains a path separator — the same
-//! lexical-component-rejection idiom `paths::get_asset_path` already uses
-//! elsewhere in this codebase. This is a strictly stronger guarantee than
-//! the original (nothing to "resolve" at all), not a behavior change plugins
-//! would ever notice (champion/skin/chroma IDs and plugin/file names are
-//! never legitimately `..` or path-separator-bearing).
+//! Traversal hardening strengthens the Python original: `Path::canonicalize()`
+//! requires the path to exist, so instead every path SEGMENT is rejected
+//! outright if empty, `.`/`..`, or separator-bearing (same idiom as
+//! `paths::get_asset_path`) — stronger than resolve-then-check, and no
+//! plugin-visible behavior change since these IDs/names are never legitimately `..`-like.
 
 #![allow(dead_code)]
 
@@ -27,10 +21,8 @@ use crate::skins::slog::log_warn;
 
 use super::{is_loopback_origin, read_bridge_port_file, BridgeContext};
 
-/// Route one plain-HTTP (non-upgrade) request. `origin` is the raw `Origin`
-/// header value, if any — already verified loopback-or-absent by
-/// `ws::dispatch` before this is called, so it's only used here to decide
-/// whether to attach CORS headers (ported from `cors_headers_for_origin`).
+/// Route one plain-HTTP (non-upgrade) request. `origin` is already verified
+/// loopback-or-absent by `ws::dispatch`; used here only to decide CORS headers.
 pub async fn route(ctx: &BridgeContext, path: &str, origin: Option<&str>) -> Response {
     let path_clean = percent_decode(path);
 
@@ -62,10 +54,9 @@ pub async fn route(ctx: &BridgeContext, path: &str, origin: Option<&str>) -> Res
     not_found()
 }
 
-/// Current LCU gameflow phase (e.g. `Matchmaking`, `ReadyCheck`, `ChampSelect`),
-/// as JSON `{"phase": "..."}` or `{"phase": null}`. Client plugins (CHUD-QueueArena)
-/// poll this because a direct LCU fetch from the client CEF context isn't reliable;
-/// the Chud app holds LCU auth so this always resolves.
+/// Current LCU gameflow phase as JSON `{"phase": "..."}` or `{"phase": null}`.
+/// Client plugins (CHUD-QueueArena) poll this since a direct LCU fetch from
+/// the CEF context isn't reliable; the Chud app holds LCU auth so this always resolves.
 async fn handle_phase(origin: Option<&str>) -> Response {
     let phase = if let Some(auth) = crate::lcu::cached_auth() {
         let client = crate::lcu::build_lcu_client(3.0);
@@ -124,9 +115,7 @@ async fn handle_preview(rest: &str, origin: Option<&str>) -> Response {
 }
 
 async fn handle_asset(rest: &str, origin: Option<&str>) -> Response {
-    // `paths::get_asset_path` already does the full traversal-hardening
-    // dance (lexical component rejection + canonicalize-under-check); this
-    // is a thin re-use, not a reimplementation.
+    // `paths::get_asset_path` already does the full traversal-hardening dance.
     let asset_file = paths::get_asset_path(rest);
     if !asset_file.exists() {
         return not_found();
@@ -144,9 +133,8 @@ async fn handle_plugin(rest: &str, origin: Option<&str>) -> Response {
         log_warn!("[bridge] Blocked path traversal attempt in /plugin/{rest}");
         return forbidden();
     }
-    // `file_name` may itself contain sub-path separators (plugin assets in
-    // nested folders) — validate every component instead of the whole
-    // segment being separator-free.
+    // `file_name` may itself contain sub-path separators (nested plugin
+    // assets) — validate every component, not just separator-freeness.
     let file_path_rel = Path::new(file_name);
     let bad_component = file_path_rel.components().any(|c| {
         matches!(c, std::path::Component::ParentDir | std::path::Component::Prefix(_) | std::path::Component::RootDir)
@@ -163,9 +151,8 @@ async fn handle_plugin(rest: &str, origin: Option<&str>) -> Response {
 }
 
 async fn serve_file(path: &Path, content_type: &str, origin: Option<&str>) -> Response {
-    // Async read — a blocking std::fs::read here stalls the shared tokio reactor
-    // thread (which also drives the Pengu-plugin WS ping/pong) on an AV-scanned
-    // or OneDrive-redirected path.
+    // Async read — a blocking std::fs::read would stall the shared tokio
+    // reactor (which also drives the Pengu-plugin WS ping/pong).
     match tokio::fs::read(path).await {
         Ok(bytes) => file_response(bytes, content_type, origin),
         Err(_) => not_found(),
@@ -203,9 +190,8 @@ fn text_response(text: String, origin: Option<&str>) -> Response {
     builder.body(Body::from(text)).unwrap_or_else(|_| not_found())
 }
 
-/// Ported from `cors_headers_for_origin`: only a loopback origin gets
-/// `Access-Control-Allow-Origin` echoed back (plus `Vary: Origin`); an
-/// absent/non-loopback origin gets no CORS headers at all.
+/// Only a loopback origin gets `Access-Control-Allow-Origin` echoed back
+/// (plus `Vary: Origin`); absent/non-loopback origins get no CORS headers.
 fn apply_cors(builder: axum::http::response::Builder, origin: Option<&str>) -> axum::http::response::Builder {
     match origin {
         Some(o) if is_loopback_origin(o) => {
@@ -223,9 +209,8 @@ fn forbidden() -> Response {
     (StatusCode::FORBIDDEN, "Forbidden").into_response()
 }
 
-/// Minimal `%XX` percent-decoder (ported from `urllib.parse.unquote`'s
-/// effect on the request path) — self-contained rather than a new crate
-/// dependency for this one use site.
+/// Minimal `%XX` percent-decoder (mirrors `urllib.parse.unquote`) — avoids a
+/// new crate dependency for this one use site.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

@@ -1,10 +1,7 @@
-//! Skin/hash download pipeline (S7) — see `docs/SKINS_PORT.md` §2. Ported
-//! from `utils\download\repo_downloader.py` (`RepoDownloader`, the only
-//! wired skin downloader) and `utils\download\hash_updater.py`
-//! (`update_hash_files`, the wired hash-file updater). `SkinDownloader`/
-//! `SmartSkinDownloader` (superseded by `RepoDownloader`) and
-//! `hashes_downloader.py` (a dead duplicate of `hash_updater.py`) are NOT
-//! ported — see `docs/SKINS_PORT.md` §0 scope decisions.
+//! Skin/hash download pipeline (S7). Ported from `utils\download\repo_downloader.py`
+//! (`RepoDownloader`, the only wired skin downloader) and `hash_updater.py`
+//! (`update_hash_files`). `SkinDownloader`/`SmartSkinDownloader` (superseded)
+//! and `hashes_downloader.py` (a dead duplicate) are NOT ported.
 //!
 //! This module holds the pieces shared by both downloaders: the error type,
 //! the progress-callback signature, an HTTP client with Chud's User-Agent,
@@ -28,23 +25,18 @@ pub use repo::{download_skins, download_skins_incremental, DownloadMethod, Downl
 use crate::skins::paths;
 use crate::skins::slog::{log_info, log_warn};
 
-/// Progress callback shared by every downloader here: `(done, total)`,
-/// where `total` is `None` until the server reports a size (or never, for
-/// the many-small-files incremental path). Ported from Python's
-/// `ProgressCallback` type alias — there it also carried a status *string*
-/// driving a Win32 dialog; that UI is dropped per `docs/SKINS_PORT.md` §0,
-/// S9 renders its own progress bar off this numeric pair.
+/// Progress callback shared by every downloader here: `(done, total)`, where
+/// `total` is `None` until the server reports a size (or never, for the
+/// many-small-files incremental path). Python's status-string/Win32-dialog
+/// side is dropped; S9 renders its own progress bar off this numeric pair.
 pub type Progress<'a> = &'a mut (dyn FnMut(u64, Option<u64>) + Send);
 
-/// A generous safety-net timeout for the large streaming downloads (repo
-/// ZIP, hash shards). NOTE this deliberately does NOT reuse Python's
-/// `SKIN_DOWNLOAD_STREAM_TIMEOUT_S` (60s) as a `reqwest` per-request
-/// timeout: `requests`' `timeout=` with `stream=True` bounds each
-/// socket-level read (an inactivity timeout), not the whole transfer, so a
-/// slow-but-progressing multi-minute download still succeeds in Python. A
-/// literal `reqwest` `.timeout(60s)` bounds the *entire* request including
-/// body, and would abort a legitimately slow ~200MB transfer. This is a
-/// dead-connection guard, not a throughput floor.
+/// A generous safety-net timeout for large streaming downloads (repo ZIP,
+/// hash shards). Deliberately does NOT reuse Python's 60s
+/// `SKIN_DOWNLOAD_STREAM_TIMEOUT_S`: Python's `timeout=` with `stream=True`
+/// is a per-read inactivity timeout, but `reqwest`'s `.timeout()` bounds the
+/// *entire* request — a literal 60s would abort a slow-but-healthy ~200MB
+/// transfer. This is a dead-connection guard, not a throughput floor.
 const STREAM_SAFETY_TIMEOUT_S: u64 = 600;
 
 #[derive(Debug)]
@@ -103,30 +95,22 @@ impl From<std::string::FromUtf8Error> for DownloadError {
 }
 
 /// GitHub-only client (repo ZIP + hash shards). Delegates to
-/// `net::build_external_client` (P0-B) — which sets its own `Chud/{version}`
-/// User-Agent (see the rebrand map in `docs/SKINS_PORT.md` §1) — so it gets
-/// default cert validation, HTTPS-only, and a redirect policy re-validated
-/// against the allowlist on every hop, on top of the long safety timeout
-/// this module already relies on for slow multi-minute transfers (see
-/// `STREAM_SAFETY_TIMEOUT_S`'s doc comment — that's still applied
-/// per-request by `stream_get`/`simple_get`, which override whatever
-/// default this sets). GitHub's hosts are in `net`'s built-in allowlist, so
-/// no config lookup is needed here.
+/// `net::build_external_client`, which gets cert validation, HTTPS-only, and
+/// allowlist-checked redirects; GitHub's hosts are already in `net`'s
+/// built-in allowlist.
 ///
 /// Deliberately does NOT route through `net::get_bytes_checked` — this
-/// module's own `stream_get`/`simple_get` need to see a 403/429 status
-/// directly (GitHub's anonymous rate limit) to decide "don't retry", and
-/// `get_bytes_checked`'s `error_for_status()` would collapse that into a
-/// generic error before the rate-limit check ever ran.
+/// module's `stream_get`/`simple_get` need to see a 403/429 status directly
+/// (GitHub's rate limit) to decide "don't retry", and `get_bytes_checked`'s
+/// `error_for_status()` would collapse that into a generic error first.
 pub(crate) fn build_client() -> Result<reqwest::Client, DownloadError> {
     Ok(crate::net::build_external_client(STREAM_SAFETY_TIMEOUT_S as f64, crate::net::built_in_allowed_origins()))
 }
 
 /// Stream `url` into memory, invoking `progress(baseline + done, total)` per
-/// chunk. `total_hint` seeds the total (e.g. from a HEAD request) when the
-/// response itself doesn't report `Content-Length`; `baseline` lets callers
-/// merging multiple files (hash shards) report cumulative progress across
-/// the whole sequence.
+/// chunk. `total_hint` seeds the total when the response has no
+/// `Content-Length`; `baseline` lets callers merging multiple files report
+/// cumulative progress across the whole sequence.
 async fn stream_get(
     client: &reqwest::Client,
     url: &str,
@@ -155,12 +139,9 @@ async fn stream_get(
     Ok(buf)
 }
 
-/// Stream `url` with exponential-backoff retry (2s/4s/8s, 3 attempts total —
-/// ported verbatim from `repo_downloader.py::download_repo_zip`'s retry
-/// loop). GitHub's anonymous rate limit (403/429) is NOT retried — retrying
-/// an hourly quota within seconds can't help, so it bails immediately with a
-/// clear log line (mirrors the distinct rate-limit handling in
-/// `hash_updater.py::check_file_commits`).
+/// Stream `url` with exponential-backoff retry (2s/4s/8s, 3 attempts total).
+/// GitHub's rate limit (403/429) is NOT retried — retrying an hourly quota
+/// within seconds can't help, so it bails immediately with a clear log line.
 async fn stream_get_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -195,9 +176,7 @@ async fn stream_get_with_retry(
 }
 
 /// Single-attempt GET-to-bytes with no chunked progress reporting — used for
-/// the many small per-file downloads in the incremental skin-update path,
-/// matching `repo_downloader.py::download_changed_files`'s plain
-/// (non-retrying) `session.get(...)` per changed file.
+/// the many small per-file downloads in the incremental skin-update path.
 async fn simple_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Result<Vec<u8>, DownloadError> {
     let response = client.get(url).timeout(timeout).send().await?;
     let status = response.status();
@@ -210,13 +189,9 @@ async fn simple_get(client: &reqwest::Client, url: &str, timeout: Duration) -> R
     Ok(response.bytes().await?.to_vec())
 }
 
-/// Decide incremental vs. full download and run it (ported from the
-/// `needs_full_download` decision in
-/// `launcher\sequences\skin_sync_sequence.py::perform_skin_sync`, which fed
-/// `skin_downloader.py::download_skins_on_startup`). The Win32 dialog
-/// plumbing and `AppStatus` tray-icon side effects around that decision are
-/// dropped per `docs/SKINS_PORT.md` §0 — S9 drives its own UI off
-/// `progress`.
+/// Decide incremental vs. full download and run it (ported from
+/// `perform_skin_sync`'s `needs_full_download` decision). Win32
+/// dialog/tray-icon side effects are dropped — S9 drives its own UI off `progress`.
 pub async fn download_skins_on_startup(
     force: bool,
     progress: Progress<'_>,
@@ -234,13 +209,10 @@ pub async fn download_skins_on_startup(
     }
 }
 
-/// Cheap "is there anything downloaded" check standing in for the decision
-/// half of `state\core\app_status.py::AppStatus.check_skins_downloaded` —
-/// that class (tray-icon status management) is dropped per
-/// `docs/SKINS_PORT.md` §0; only the "does a champion/skin folder with
-/// actual content exist" question survives, to decide full vs. incremental.
-/// `pub` since S9's `skins_get_state`/`skins_diagnostics` commands reuse this
-/// exact check for the Skins page's "skins downloaded" status chip.
+/// Cheap "is there anything downloaded" check (does a champion/skin folder
+/// with actual content exist) used to decide full vs. incremental. `pub`
+/// since S9's `skins_get_state`/`skins_diagnostics` commands reuse this for
+/// the Skins page's status chip.
 pub fn skins_present(skins_dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(skins_dir) else { return false };
     for entry in entries.flatten() {

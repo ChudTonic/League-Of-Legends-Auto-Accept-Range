@@ -1,24 +1,17 @@
 //! Inbound bridge message handlers (S4) — ported from `pengu\communication\
-//! message_handler.py`'s `MessageHandler`. Every handler's response/side
-//! effect goes out through `BridgeContext::handle`'s broadcast (never a
-//! targeted reply — see `ws.rs`'s doc comment on the broadcast-only
-//! contract).
+//! message_handler.py`'s `MessageHandler`. Every response/side effect goes
+//! out through `BridgeContext::handle`'s broadcast, never a targeted reply
+//! (see `ws.rs`'s broadcast-only contract).
 //!
-//! Party mode (`party-*`) is S6: these handlers call into the real
-//! `skins::party::manager::PartyManager` (pulled from `AppState::
-//! skins_party`, set once in `lib.rs`'s `setup()`) rather than reimplementing
-//! any party logic here — see `handlers::party_manager` and the handlers
-//! below it.
+//! Party mode (`party-*`) calls the real `skins::party::manager::PartyManager`
+//! (from `AppState::skins_party`) rather than reimplementing party logic here.
 //!
-//! A few Python collaborators this file would otherwise call into were never
-//! ported to Rust and are out of this milestone's file scope to create
-//! (`ui/core/user_interface.py`, `pengu/processing/skin_processor.py`,
-//! `pengu/processing/flow_controller.py`, `utils/system/admin_utils.py`,
-//! `utils/core/issue_reporter.py`). Where a handler depends on one, this
-//! file reimplements the essential wire-visible behavior directly against
-//! already-ported primitives (`lcu_ext`, `features::*`, `injection::*`)
-//! rather than inventing a shadow copy of the missing module — each such
-//! spot has a comment calling out the simplification.
+//! Some Python collaborators (`user_interface.py`, `skin_processor.py`,
+//! `flow_controller.py`, `admin_utils.py`, `issue_reporter.py`) were never
+//! ported. Where a handler depends on one, this file reimplements the
+//! essential wire-visible behavior against already-ported primitives
+//! (`lcu_ext`, `features::*`, `injection::*`) instead — each such spot is
+//! commented as a simplification.
 
 #![allow(dead_code)]
 
@@ -135,12 +128,10 @@ async fn route(ctx: &BridgeContext, msg: InboundMessage) {
 // ---------------------------------------------------------------------
 // Legacy type-less skin-hover message — `_handle_skin_detection`.
 //
-// SIMPLIFICATION: Python delegated to `SkinProcessor`/`FlowController`
-// (neither ported — see module doc). This reimplements the essential path
-// directly: resolve the hover text to a skin ID via the already-ported
-// `lcu_ext::find_skin_by_text` scraper helper, update `SkinsShared`, and
-// broadcast `skin-state`. The `flow_controller.should_process_payload()`
-// gate (phase/timing-based suppression) is not reproduced.
+// SIMPLIFICATION: Python delegated to unported `SkinProcessor`/`FlowController`.
+// This resolves the hover text via `lcu_ext::find_skin_by_text`, updates
+// `SkinsShared`, and broadcasts `skin-state`; the `flow_controller`
+// phase/timing suppression gate is not reproduced.
 // ---------------------------------------------------------------------
 
 async fn handle_skin_hover(ctx: &BridgeContext, skin_name: String) {
@@ -149,9 +140,8 @@ async fn handle_skin_hover(ctx: &BridgeContext, skin_name: String) {
         return;
     }
 
-    // Always remember the raw hover text (mirrors Python's unconditional
-    // `ui_last_text` write), and use it to dedupe identical back-to-back
-    // hovers the same way `SkinProcessor.last_skin_name` did.
+    // Remember the raw hover text and dedupe identical back-to-back hovers
+    // (mirrors Python's `ui_last_text`/`SkinProcessor.last_skin_name`).
     let previous = {
         let mut shared = ctx.skins.shared.lock_safe();
         let previous = shared.ui_last_text.clone();
@@ -185,11 +175,9 @@ async fn handle_skin_hover(ctx: &BridgeContext, skin_name: String) {
     ctx.handle.broadcast_skin_state(resolved_name, skin_id, has_chromas);
 }
 
-/// Offline skin-name→ID fallback via `skin_db` (the downloaded `skin_ids.json`),
-/// used when the live LCU champion scrape can't resolve a hovered skin — the
-/// live data is thin on some clients and during ARAM's rapid bench swaps, which
-/// left `last_hovered_skin_id` empty and broke injection ("NO SKIN ID"). Returns
-/// `(Some(id), name)` on a hit, `(None, name)` otherwise.
+/// Offline skin-name->ID fallback via `skin_db` when the live LCU scrape can't
+/// resolve a hover — live data is thin on some clients / during ARAM bench
+/// swaps, which used to leave `last_hovered_skin_id` empty and break injection.
 fn resolve_offline(ctx: &BridgeContext, trimmed: &str) -> (Option<i64>, String) {
     let lang = { ctx.skins.shared.lock_safe().current_language.clone() };
     let id = crate::skins::skin_db::resolve_skin_id(trimmed, lang.as_deref());
@@ -219,11 +207,9 @@ fn skin_has_chromas(cache: Option<&ChampionSkinCache>, skin_id: Option<i64>) -> 
     cache.get_chromas_for_skin(skin_id).map(|c| !c.is_empty()).unwrap_or(false)
 }
 
-/// Fresh (uncached beyond `lcu_ext`'s own 200ms shared-GET cache) scrape for
-/// the currently-locked champion — the champion skin cache the phase actor
-/// (S2) holds is local to that task, not shared state this milestone's file
-/// scope can reach into; `scrape_champion_skins` is designed for exactly
-/// this always-fresh-fetch call pattern (see its own doc comment).
+/// Fresh scrape (beyond `lcu_ext`'s own 200ms shared-GET cache) for the
+/// locked champion — the phase actor's cache is task-local, not reachable
+/// shared state, so this always re-fetches via `scrape_champion_skins`.
 async fn cache_for_locked_champion(ctx: &BridgeContext) -> Option<ChampionSkinCache> {
     let champion_id = { ctx.skins.shared.lock_safe().locked_champ_id }?;
     let auth = lcu::cached_auth()?;
@@ -248,10 +234,9 @@ async fn handle_chroma_selection(ctx: &BridgeContext, chroma_id: Option<i64>, sk
     let chroma_name = chroma_name.unwrap_or_else(|| "Unknown".to_string());
 
     let cache = cache_for_locked_champion(ctx).await;
-    // "current_skin_id" (the base skin the wheel was shown for) has no
-    // shared-state home in this port — the Python `ChromaPanelManager` that
-    // tracked it wasn't ported (see `features::chroma`'s doc comment).
-    // The locked champion's base skin is the closest available proxy.
+    // "current_skin_id" (base skin the wheel was shown for) has no shared-state
+    // home — the unported `ChromaPanelManager` tracked it; the locked champion's
+    // base skin is the closest available proxy.
     let current_skin_id = { ctx.skins.shared.lock_safe().locked_champ_id.map(|c| c * 1000).unwrap_or(0) };
 
     let selected_chroma_id = {
@@ -293,9 +278,8 @@ async fn handle_dice_button_click(ctx: &BridgeContext, state: Option<String>) {
 }
 
 /// `_handle_find_match_hover`: force base skins immediately. SIMPLIFICATION:
-/// Python called an external `force_base_skins_callback` (not ported); this
-/// reimplements the intent directly against `lcu_ext`'s already-ported PATCH
-/// helpers and starts the base-skin confirmation tracker.
+/// Python's `force_base_skins_callback` wasn't ported; this calls `lcu_ext`'s
+/// PATCH helpers directly and starts the base-skin confirmation tracker.
 async fn handle_find_match_hover(ctx: &BridgeContext) {
     let Some(auth) = lcu::cached_auth() else { return };
     let (champion_id, is_swiftplay, tracking, owned) = {
@@ -383,12 +367,9 @@ fn percent_encode_segment(segment: &str) -> String {
 // Custom skin mod selection (select-time extraction)
 // ---------------------------------------------------------------------
 
-/// Extract `source` into `paths::injection_mods_dir()` immediately (ported
-/// from the identical extraction block duplicated across `_handle_select_
-/// skin_mod`/`_handle_select_map`/`_handle_select_font`/`_handle_select_
-/// announcer`/`_handle_select_other`) — select-TIME extraction, not
-/// inject-time, so the JS UI's "mod is ready" assumption holds the instant
-/// selection succeeds.
+/// Extract `source` into `paths::injection_mods_dir()` immediately — select-TIME
+/// extraction, not inject-time, so the JS UI's "mod is ready" assumption holds
+/// the instant selection succeeds. Shared by all `_handle_select_*` variants.
 struct ExtractedMod {
     mod_folder_name: String,
     mod_path: String,
@@ -526,13 +507,9 @@ fn handle_dismiss_historic(ctx: &BridgeContext) {
 // ---------------------------------------------------------------------
 // Map / font / announcer / other mod selection
 //
-// MIGRATED (S5 follow-up): these selections used to live in a bridge-local
-// `BridgeContext::mod_selections` (`bridge::ModSelections`) because
-// `state.rs` wasn't in S4's file scope. They now write straight into
-// `ctx.skins.shared.lock_safe().category_mods` (`state::CategoryModSelections`)
-// — the field `trigger.rs`'s injection trigger actually reads as
-// `extra_mod_names` — so a bridge-driven selection is visible to injection
-// without a second copy to keep in sync.
+// These write straight into `ctx.skins.shared.lock_safe().category_mods`
+// (`state::CategoryModSelections`), the same field `trigger.rs` reads as
+// `extra_mod_names` — no second copy to keep in sync with injection.
 // ---------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -721,9 +698,8 @@ async fn handle_select_other(ctx: &BridgeContext, other_id: Option<String>, othe
     rebuild_other_historic(ctx);
 }
 
-/// Rebuild `mod_historic.json`'s six list categories from the current
-/// `others` selection, keyed by each path's leading segment (ported from
-/// `_handle_select_other`'s `by_cat` rebuild).
+/// Rebuild `mod_historic.json`'s category lists from the current `others`
+/// selection, keyed by each path's leading segment.
 fn rebuild_other_historic(ctx: &BridgeContext) {
     let others = ctx.skins.shared.lock_safe().category_mods.others.clone();
     let mut h = historic::load_mod_historic();
@@ -1047,16 +1023,10 @@ fn handle_open_pengu_loader_ui() {
 // ---------------------------------------------------------------------
 // Settings / path validation
 //
-// DEVIATION (flagged for the lead): `config::SkinsCfg` (out of this
-// milestone's file scope) has `league_path`/`injection_threshold_ms` but no
-// `monitor_auto_resume_timeout`/`autostart` fields, and there is no ported
-// Windows autostart registration anywhere in this codebase
-// (`utils/system/admin_utils.py`'s `register_autostart`/`unregister_
-// autostart` equivalent). `monitorAutoResumeTimeout`/`autostart` persist to
-// a small bridge-local JSON file and round-trip on request/save, but
-// `autostart` is NOT actually enforced (no Task Scheduler registration) —
-// recommend adding the missing `SkinsCfg` field and a real autostart port in
-// a follow-up.
+// `SkinsCfg` has no `monitor_auto_resume_timeout`/`autostart` fields and
+// there's no ported Windows autostart registration, so those two persist to
+// a bridge-local JSON file and round-trip on request/save, but `autostart`
+// is NOT actually enforced (no Task Scheduler registration).
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1184,25 +1154,19 @@ fn handle_settings_save(
 // ---------------------------------------------------------------------
 // Diagnostics
 //
-// SIMPLIFICATION: `utils/core/issue_reporter.py` isn't ported (out of
-// scope). This reads/writes `chud_diagnostics.txt` directly (the rebranded
-// diagnostics-log filename per `docs/SKINS_PORT.md` §1) using the same
-// "ts | msg" + optional "Fix:" line block format, but the deep numeric-hint
-// regex extraction (`observedTimeoutS`, `baseSkinForceTimeMs`, etc.) is
-// dropped in favor of the tracker-based stats (`injection::base_skin_
-// tracker`, which IS fully ported and wired) — the `code`/`text` contract
-// (`AUTO_RESUME_TRIGGERED`, `BASE_SKIN_FORCE_SLOW`, `BASE_SKIN_VERIFY_FAILED`)
-// and the dedupe/cap-8/reverse-chronological behavior are preserved.
+// SIMPLIFICATION: unported `issue_reporter.py`. Reads/writes
+// `chud_diagnostics.txt` directly ("ts | msg" + optional "Fix:" lines); the
+// deep numeric-hint regex extraction is dropped in favor of tracker-based
+// stats (`injection::base_skin_tracker`), but the `code`/`text` contract
+// and dedupe/cap-8/reverse-chronological behavior are preserved.
 // ---------------------------------------------------------------------
 
 fn diagnostics_file_path() -> std::path::PathBuf {
     paths::data_root().join("chud_diagnostics.txt")
 }
 
-/// Parse "ts | msg" blocks (each optionally followed by a "Fix: ..." line),
-/// returning the raw joined-message line (not yet split) plus the fix line —
-/// this shape is what the clear-category rewrite needs to preserve exact
-/// on-disk formatting.
+/// Parse "ts | msg" blocks (each optionally followed by "Fix: ..."). Keeps
+/// the raw message line unsplit so clear-category can rewrite exact on-disk formatting.
 fn parse_diagnostic_blocks(text: &str) -> Vec<(String, Option<String>)> {
     let lines: Vec<&str> = text.lines().collect();
     let mut blocks = Vec::new();
@@ -1404,13 +1368,10 @@ fn handle_diagnostics_apply_recommended(ctx: &BridgeContext) {
 }
 
 // ---------------------------------------------------------------------
-// Party mode (S6) — real `PartyManager` calls, pulled from `AppState::
-// skins_party` (set once in `lib.rs`'s `setup()`, after the bridge). Every
-// handler answers via the same message shapes `party/integration/ui_bridge.py`
-// used (`party-enabled`/`party-disabled`/`party-peer-added`/
-// `party-peer-removed`); `PartyManager` itself pushes `party-state`
-// proactively (on enable/disable/add-peer/remove-peer and whenever the
-// relay's member list changes) — see `PartyManager::broadcast_state`.
+// Party mode — real `PartyManager` calls, pulled from `AppState::skins_party`.
+// Handlers reply with `party-enabled`/`party-disabled`/`party-peer-added`/
+// `party-peer-removed`; `PartyManager` itself pushes `party-state` proactively
+// on any state change (see `PartyManager::broadcast_state`).
 // ---------------------------------------------------------------------
 
 /// Pull the party manager out of `AppState`, if `setup()` has built it yet.
@@ -1467,10 +1428,8 @@ async fn handle_party_add_peer(ctx: &BridgeContext, token: Option<String>) {
     }
 }
 
-/// Wire field is literally `summoner_id` (snake_case, not camelCase) in the
-/// Python original's payload — see `InboundMessage::PartyRemovePeer`'s own
-/// doc comment; it arrives as a generic `Value` since the JS side doesn't
-/// consistently send it as a JSON number.
+/// Wire field is snake_case `summoner_id` (see `InboundMessage::PartyRemovePeer`);
+/// arrives as a generic `Value` since JS doesn't consistently send it as a number.
 fn handle_party_remove_peer(ctx: &BridgeContext, summoner_id: Option<Value>) {
     let Some(summoner_id) = summoner_id.and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) else {
         log_warn!("[bridge] party-remove-peer: missing/invalid summoner_id");
@@ -1546,8 +1505,7 @@ mod tests {
     #[test]
     fn bridge_local_settings_default_uses_safe_auto_resume_timeout() {
         let s = BridgeLocalSettings::default();
-        // 25s, not the Python original's 60s — a game frozen ~60s at launch
-        // wedges the Riot session (see config::SkinsCfg field docs).
+        // 25s, not Python's 60s — a ~60s launch freeze wedges the Riot session.
         assert_eq!(s.monitor_auto_resume_timeout, 25);
         assert!(!s.autostart_requested);
     }

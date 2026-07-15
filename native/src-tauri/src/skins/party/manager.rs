@@ -1,46 +1,34 @@
 //! Party manager (S6) — ported from `party/core/party_manager.py`
-//! (`PartyManager`) + `party/core/party_state.py` (`PartyState`), folding in
-//! `party/discovery/lobby_matcher.py` (`LobbyMatcher`) and
-//! `party/discovery/skin_collector.py`'s live `collect_relay_skins` path
-//! (`SkinCollector`) as private helpers — this milestone's file scope is
-//! `party/*` only, so the two collaborator modules that would otherwise live
-//! in `party/discovery/` are inlined here rather than split into new files.
-//! `SkinCollector.collect_all_skins`/`get_my_selection` are NOT ported: both
-//! only exist to serve the dead STUN/UDP `PeerConnection` path (`docs/
-//! SKINS_PORT.md` "Dropped"), never called by the live relay flow.
+//! (`PartyManager`) + `party_state.py` (`PartyState`), folding in
+//! `lobby_matcher.py` and `skin_collector.py`'s live `collect_relay_skins`
+//! path in as private helpers since this milestone's file scope is
+//! `party/*` only. `SkinCollector.collect_all_skins`/`get_my_selection` are
+//! NOT ported: both only serve the dead STUN/UDP `PeerConnection` path.
 //!
 //! Threading model: one `std::sync::Mutex<Inner>` with no lock held across
-//! an `await` — every async method takes a short lock, clones what it needs,
-//! drops the guard, then awaits — matching `docs/SKINS_PORT.md`'s "one
-//! coarse lock beats N per-object `threading.Lock`s" (collapses Python's
-//! `PartyState._lock` onto the same pattern `SkinsState` already uses).
+//! an `await` — every async method takes a short lock, clones what it
+//! needs, drops the guard, then awaits (same pattern `SkinsState` uses).
 //!
-//! Wire field naming: every party JSON payload (`party-state`'s body, each
-//! peer entry, `skin_selection`) is snake_case, NOT the camelCase most other
-//! bridge messages use — ported verbatim from `PartyState.to_dict()` /
-//! `SkinSelection.to_dict()` (`dataclasses.asdict`), which the rebranded
-//! `CHUD-PartyMode` Pengu Loader plugin depends on unchanged. As of P0-F the
-//! relay protocol itself carries NO summoner ids at all (see `relay.rs`'s
-//! module doc), so each peer entry's `summoner_id`/`summoner_name` keys now
-//! carry the relay's per-connection `member_id` and display name instead —
-//! same key names (wire-compat with the plugin), different meaning; see
-//! `get_state`'s doc comment.
+//! Wire field naming: every party JSON payload is snake_case, not the
+//! camelCase most other bridge messages use — ported verbatim from
+//! `PartyState.to_dict()`, which the `CHUD-PartyMode` plugin depends on
+//! unchanged. As of P0-F the relay carries NO summoner ids at all, so each
+//! peer entry's `summoner_id`/`summoner_name` keys now carry the relay's
+//! per-connection `member_id` and display name instead — same key names,
+//! different meaning (see `get_state`).
 //!
 //! P0-F hardening (party-mode data-sharing disclosure, `docs/PRIVACY-PARTY.md`):
 //!   * `enable()` refuses to run until the user has accepted the current
-//!     `CURRENT_PARTY_CONSENT_VERSION` disclosure (`config.party.consent_version`).
-//!   * Every enable() mints a fresh EPHEMERAL identity (a random per-session
-//!     id used for the room-key/token instead of the real summoner id, plus
-//!     an ed25519 keypair) — no durable identity ever touches the relay.
+//!     `CURRENT_PARTY_CONSENT_VERSION` disclosure.
+//!   * Every `enable()` mints a fresh EPHEMERAL identity (random per-session
+//!     id + ed25519 keypair) — no durable identity ever touches the relay.
 //!   * Every broadcast selection is signed, bound to the room's `epoch` and
 //!     our relay-assigned `member_id`; peers verify before trusting anything.
-//!   * `get_party_skins` enforces a hard roster gate (was advisory pre-P0-F):
-//!     a peer's champion must be a CURRENT, live champ-select teammate, or
-//!     the selection is dropped — fail closed if that session isn't
-//!     available at all.
-//!   * Peer-advertised announcer packs only ever auto-download when the user
-//!     opted into that separately AND the Library catalog itself confirms
-//!     the mod-id under the `announcer` category.
+//!   * `get_party_skins` enforces a hard roster gate: a peer's champion must
+//!     be a CURRENT, live champ-select teammate, or the selection is
+//!     dropped — fails closed if that session isn't available at all.
+//!   * Peer-advertised announcer packs only auto-download when the user
+//!     opted in AND the Library catalog confirms the mod-id under `announcer`.
 
 #![allow(dead_code)]
 
@@ -83,13 +71,10 @@ const SKIN_BROADCAST_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// review and accept again.
 pub const CURRENT_PARTY_CONSENT_VERSION: u32 = 1;
 
-/// One connected peer — ported from `PartyPeerState`. In the shared-room
-/// relay model a peer only exists in this map while actually present in the
-/// room (see `handle_members_update`'s stale-removal pass), so `connected`
-/// is always `true` and `connection_state` always `"connected"` for an entry
-/// that exists at all — kept as fields (rather than collapsed away) purely
-/// for wire shape parity with `PartyPeerState.to_dict()`. Keyed by the
-/// relay's `member_id` (P0-F: no summoner id is ever known for a peer).
+/// One connected peer — ported from `PartyPeerState`. A peer only exists in
+/// this map while present in the room, so `connected`/`connection_state`
+/// are always `true`/`"connected"` — kept as fields purely for wire shape
+/// parity. Keyed by the relay's `member_id` (P0-F: no summoner id is ever known for a peer).
 #[derive(Debug, Clone)]
 pub struct PartyPeer {
     pub member_id: u64,
@@ -131,34 +116,27 @@ pub struct PartySkinData {
 
 struct Inner {
     enabled: bool,
-    /// Still resolved from the LCU on every `enable()` — used internally
-    /// only (display name; a stable value for `add_peer_inner`'s "you can't
-    /// add yourself" check no longer applies here, see `ephemeral_host_id`).
-    /// NEVER sent over the relay wire (P0-F).
+    /// Still resolved from the LCU on every `enable()`, used internally only
+    /// (display name). NEVER sent over the relay wire (P0-F).
     my_summoner_id: Option<u64>,
     my_summoner_name: String,
     my_key: Option<[u8; 32]>,
     my_token: Option<String>,
     /// Random per-`enable()` id used INSTEAD of the real summoner id for the
-    /// token payload and `relay::compute_room_key` — see `enable_inner`'s
-    /// doc comment. This is what a pasted token's `summoner_id` field
-    /// actually contains now.
+    /// token payload and `relay::compute_room_key` — a pasted token's
+    /// `summoner_id` field actually contains this now.
     ephemeral_host_id: Option<u64>,
     /// Ephemeral ed25519 signing key, freshly generated each `enable()`.
-    /// Wrapped in `Arc` so cloning it out from under the lock (to sign
-    /// without holding `inner` across file-hash I/O) is cheap regardless of
-    /// whether the crate's `SigningKey` itself is cheaply `Clone`.
+    /// Wrapped in `Arc` so cloning it out from under the lock is cheap.
     signing: Option<Arc<SigningKey>>,
     relay: Option<PartyRelay>,
     /// Keyed by the relay's `member_id` — P0-F dropped summoner ids from the
     /// wire, so that's the only stable peer identity available.
     peers: HashMap<u64, PartyPeer>,
     /// Last-broadcast (skin_id, chroma_id, custom_mod_relative_path,
-    /// announcer_mod_id) so the 1s tick only sends on an actual change —
-    /// ported from `_skin_broadcast_loop`'s `last_*` locals. Also cleared by
-    /// `handle_session_established` so a fresh relay session (which needs a
-    /// freshly-signed broadcast) forces an immediate resend even when the
-    /// selection itself hasn't changed.
+    /// announcer_mod_id) so the 1s tick only sends on an actual change. Also
+    /// cleared by `handle_session_established` so a fresh relay session
+    /// forces an immediate resend even when the selection is unchanged.
     last_broadcast: Option<(Option<i64>, Option<i64>, Option<String>, Option<String>)>,
     /// Library mod-ids of peer announcers we've already started (or
     /// finished) downloading this session — dedups the download trigger
@@ -195,10 +173,8 @@ pub struct PartyManager {
 
 impl PartyManager {
     /// Constructed once in `lib.rs`'s `setup()`, after the bridge server is
-    /// up (so `bridge` is available to push proactive `party-state`
-    /// updates). `relay_url` resolution mirrors `ws_relay.py`: `CHUD_RELAY_
-    /// URL` env wins, then the config's `party_relay_url`, then the deployed
-    /// relay's default URL.
+    /// up (so `bridge` can push proactive `party-state` updates). `relay_url`
+    /// resolution: `CHUD_RELAY_URL` env wins, then config, then the default.
     pub fn new(app: &AppHandle, skins: Arc<SkinsState>, bridge: BridgeHandle) -> Arc<Self> {
         let relay_url = resolve_relay_url(app);
         let http_client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
@@ -238,13 +214,11 @@ impl PartyManager {
 
     /// `PartyManager.enable` — generate a token, connect to our own relay
     /// room, and start the lobby-check + skin-broadcast loops. On failure,
-    /// tears back down (mirroring Python's `except` -> `await self.disable()`
-    /// -> re-raise) so a partially-enabled state never lingers.
+    /// tears back down so a partially-enabled state never lingers.
     ///
-    /// P0-F consent gate: refuses to run at all until
-    /// `config.party.consent_version` covers `CURRENT_PARTY_CONSENT_VERSION`
-    /// — checked FIRST, before anything else, so an un-consented app makes
-    /// zero relay connections (see `docs/PRIVACY-PARTY.md`).
+    /// P0-F consent gate: refuses to run until `config.party.consent_version`
+    /// covers `CURRENT_PARTY_CONSENT_VERSION` — checked FIRST, so an
+    /// un-consented app makes zero relay connections.
     pub async fn enable(self: &Arc<Self>) -> Result<String, String> {
         {
             let app_state = self.app.state::<Arc<crate::AppState>>();
@@ -272,10 +246,9 @@ impl PartyManager {
     }
 
     async fn enable_inner(self: &Arc<Self>) -> Result<String, String> {
-        // The LCU can be briefly unresponsive (still loading, busy, or the
-        // lockfile port/password just rotated on a client restart). Retry a
-        // few times, invalidating stale auth between attempts, so a transient
-        // hiccup doesn't fail enable with a scary "is League running?" error.
+        // LCU can be briefly unresponsive (loading, busy, or lockfile just
+        // rotated). Retry a few times, invalidating stale auth between
+        // attempts, so a transient hiccup doesn't fail enable outright.
         let mut resolved: Option<(Auth, (u64, String))> = None;
         for attempt in 0..5 {
             if let Some(auth) = lcu::cached_auth() {
@@ -296,8 +269,6 @@ impl PartyManager {
         // Ephemeral identity (P0-F): neither the room key, the token, nor
         // anything sent to the relay carries the real summoner id — a fresh
         // random id + ed25519 keypair are minted every `enable()` instead.
-        // `summoner_id`/`summoner_name` above are kept ONLY for internal use
-        // (display name; see `Inner::my_summoner_id`'s doc comment).
         let ephemeral_host_id: u64 = {
             use rand::RngCore;
             rand::thread_rng().next_u64() | 1 // never 0, matching the relay's own "never 0" member_id convention
@@ -308,11 +279,9 @@ impl PartyManager {
         let timestamp = unix_now() as u32;
         let token_str = token::encode_token(ephemeral_host_id, &key, timestamp);
 
-        // Auto-party: if we're already in a lobby, join the room derived from
-        // the shared lobby `partyId` so every Chud user in the lobby converges
-        // automatically — no token exchange. Otherwise fall back to our
-        // personal room (still joinable via a pasted token). `auto_room_loop`
-        // keeps this in sync as we join/leave/switch lobbies.
+        // Auto-party: if already in a lobby, join the room derived from the
+        // shared lobby `partyId` so every Chud user converges automatically —
+        // no token exchange. `auto_room_loop` keeps this in sync as we join/leave/switch lobbies.
         let party_id = lcu_ext::get_lobby_party_id(&self.http_client, &auth).await;
         let room_key = match &party_id {
             Some(pid) => relay::compute_lobby_room_key(pid),
@@ -347,9 +316,8 @@ impl PartyManager {
     }
 
     /// `PartyManager.disable` — stop the background loops, disconnect the
-    /// relay, and clear all party state (including the ephemeral signing key
-    /// — a fresh one is minted on the next `enable()`; the relay session
-    /// itself goes away with the disconnected `PartyRelay` handle).
+    /// relay, and clear all party state (including the ephemeral signing
+    /// key — a fresh one is minted on the next `enable()`).
     pub async fn disable(&self) {
         log_info!("[PARTY] Disabling party mode...");
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -376,9 +344,7 @@ impl PartyManager {
 
     /// `PartyManager.add_peer` — join another player's room by pasting their
     /// token (single shared-room model: this disconnects our own room). A
-    /// state broadcast always follows, success or failure, matching
-    /// `PartyUIBridge._handle_add_peer`'s unconditional `self._broadcast_
-    /// state()` after the call.
+    /// state broadcast always follows, success or failure.
     pub async fn add_peer(self: &Arc<Self>, token_str: &str) -> Result<(), String> {
         let result = self.add_peer_inner(token_str).await;
         self.broadcast_state();
@@ -412,10 +378,8 @@ impl PartyManager {
         }
 
         let target_room_key = relay::compute_room_key(peer_token.summoner_id, &peer_token.room_secret);
-        // Already connected to that exact room? Nothing to do. (The older
-        // "is this peer already a member of OUR current room" identity check
-        // is gone — v2's `RelayMember` carries no summoner id to match
-        // against; the room-key equality check below is the reliable guard.)
+        // Already connected to that exact room? Nothing to do. v2's
+        // `RelayMember` carries no summoner id, so room-key equality is the guard.
         {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(relay) = &inner.relay {
@@ -453,17 +417,15 @@ impl PartyManager {
         self.broadcast_state();
     }
 
-    /// `PartyState.to_dict()` — the exact shape `party-state` broadcasts
-    /// (and the `party-get-state` response) carry, snake_case throughout
-    /// (see this module's doc comment). Each peer's `summoner_id`/
-    /// `summoner_name` keys are wire-compat with the CHUD-PartyMode Pengu
-    /// plugin, but as of P0-F carry the relay's `member_id` and display name
-    /// — no real summoner id is ever known for a peer. The top-level
-    /// `my_summoner_id`/`my_summoner_name` describe US (resolved locally
-    /// from the LCU, never sent to the relay) and keep their original
-    /// meaning. `consent_ok`/`consent_required_version`/
-    /// `auto_download_peer_announcers` are new P0-F fields the Skins page
-    /// UI gates its consent strip / toggle on.
+    /// `PartyState.to_dict()` — the exact shape `party-state`/`party-get-state`
+    /// carry, snake_case throughout. Each peer's `summoner_id`/
+    /// `summoner_name` keys are wire-compat with the CHUD-PartyMode plugin
+    /// but as of P0-F carry the relay's `member_id` and display name — no
+    /// real summoner id is ever known for a peer. Top-level
+    /// `my_summoner_id`/`my_summoner_name` describe US (resolved locally,
+    /// never sent to the relay). `consent_ok`/`consent_required_version`/
+    /// `auto_download_peer_announcers` are P0-F fields the Skins page UI
+    /// gates its consent strip/toggle on.
     pub fn get_state(&self) -> Value {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let peers: Vec<Value> = inner
@@ -518,10 +480,9 @@ impl PartyManager {
     // ─── Relay room connect/callback ───────────────────────────────────
 
     /// Connect to `room_key`'s relay room, announce ourselves (display name
-    /// + our ephemeral pubkey — no summoner id, P0-F), and stash the
-    /// resulting `PartyRelay` handle. Returns `false` (never errors) on a
-    /// failed connect — the caller logs and continues with party mode
-    /// "limited", matching `PartyManager.enable`'s `else` branch.
+    /// + ephemeral pubkey — no summoner id, P0-F), and stash the resulting
+    /// `PartyRelay` handle. Returns `false` (never errors) on a failed
+    /// connect — caller logs and continues with party mode "limited".
     async fn connect_room(self: &Arc<Self>, room_key: String, display_name: String) -> bool {
         let pubkey_hex = {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,11 +516,9 @@ impl PartyManager {
     }
 
     /// Fires once per (re)connect when the relay's `welcome` establishes a
-    /// FRESH `member_id`/`epoch` for this connection. Any selection signed
-    /// under a prior session is now unverifiable, so this just clears
-    /// `last_broadcast` — the next `skin_broadcast_loop` tick treats that as
-    /// "changed" and re-signs + resends against the new session, even if the
-    /// underlying selection is identical to before.
+    /// FRESH `member_id`/`epoch`. Any selection signed under a prior session
+    /// is now unverifiable, so this clears `last_broadcast` — the next
+    /// `skin_broadcast_loop` tick re-signs + resends against the new session.
     fn handle_session_established(self: &Arc<Self>, member_id: u64, epoch: String) {
         log_info!("[PARTY] Relay session established (member {member_id}, epoch {}...)", relay::short_key(&epoch));
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).last_broadcast = None;
@@ -575,14 +534,11 @@ impl PartyManager {
             }
             inner.relay.as_ref().and_then(|r| r.session())
         };
-        // No `welcome` on this connection yet - nothing to verify signatures
-        // against, so there's nothing trustworthy to do with this update.
+        // No `welcome` on this connection yet - nothing trustworthy to do.
         let Some((my_member_id, epoch)) = session else { return };
 
         // Verify every present skin signature ONCE per update — reused below
-        // for both the announcer-download trigger and the peer roster
-        // upsert, so a bad signature only gets logged (by
-        // `verify_member_skin`) a single time per broadcast.
+        // for both the announcer-download trigger and the peer roster upsert.
         let mut sig_ok: HashMap<u64, bool> = HashMap::new();
         for member in &members {
             if member.member_id == my_member_id || member.name.is_empty() || member.pubkey.is_empty() {
@@ -594,11 +550,10 @@ impl PartyManager {
         }
 
         // Announcer sync: a peer broadcasting a Library announcer we don't
-        // have gets downloaded + converted NOW (lobby/champ select), so it's
-        // staged and audible by the time the loadout injection runs. Only a
-        // SIGNATURE-VERIFIED member's announcer fields may trigger this at
-        // all (P0-F) — `maybe_download_peer_announcer` layers its own
-        // opt-in + Library-catalog verification on top.
+        // have gets downloaded + converted NOW so it's staged by injection
+        // time. Only a SIGNATURE-VERIFIED member's fields trigger this
+        // (P0-F) — `maybe_download_peer_announcer` layers opt-in +
+        // Library-catalog verification on top.
         for member in &members {
             if sig_ok.get(&member.member_id).copied() != Some(true) {
                 continue;
@@ -665,16 +620,13 @@ impl PartyManager {
     }
 
     /// Download + convert a peer's Library announcer in the background (once
-    /// per mod-id per session; no-op when it's already installed). Gated
-    /// behind BOTH: (a) the user's own opt-in
-    /// (`config.party.auto_download_peer_announcers`, off by default — a
-    /// peer-triggered download needs its own consent on top of party
-    /// consent), and (b) the Library catalog actually listing `mod_id` under
-    /// the `announcer` category (`lookup_announcer_in_catalog`) — the peer's
-    /// free-text `name`/id are otherwise untrusted input and must never
-    /// drive a filename or a download by themselves. `peer_name` is used
-    /// ONLY for log lines; the install record always uses the CATALOG's own
-    /// name.
+    /// per mod-id per session; no-op if already installed). Gated behind
+    /// BOTH: (a) the user's own opt-in (`auto_download_peer_announcers`,
+    /// off by default — needs its own consent on top of party consent), and
+    /// (b) the Library catalog listing `mod_id` under `announcer` — the
+    /// peer's free-text name/id are untrusted input and must never drive a
+    /// filename or download by themselves. `peer_name` is log-only; the
+    /// install record always uses the CATALOG's own name.
     fn maybe_download_peer_announcer(self: &Arc<Self>, mod_id: String, peer_name: String) {
         let app_state = self.app.state::<Arc<crate::AppState>>().inner().clone();
         let auto_download = { app_state.config.lock_safe().party.auto_download_peer_announcers };
@@ -712,11 +664,11 @@ impl PartyManager {
                 }
             };
             log_info!("[PARTY] Peer '{peer_name_for_log}' uses announcer '{catalog_name}' - downloading + converting so we hear it too");
-            // External download (Chud's Library Worker), NOT the LCU — must not
-            // reuse the loopback-only, cert-relaxed LCU client.
+            // External download, NOT the LCU — must not reuse the
+            // loopback-only, cert-relaxed LCU client.
             let http = crate::net::build_external_client(180.0, allowed.clone());
-            // `force=false` — and there is no override on this auto path at all
-            // (P0-F): a peer can never push a ModScan-flagged file onto you.
+            // `force=false`, no override on this auto path (P0-F): a peer
+            // can never push a ModScan-flagged file onto you.
             match crate::place_library_mod(None, endpoint.trim_end_matches('/'), &http, &allowed, &mod_id, &catalog_name, "", None, "announcer", false)
                 .await
             {
@@ -732,9 +684,7 @@ impl PartyManager {
                 Ok((None, summary)) => {
                     log_warn!("[MODSCAN] peer announcer '{catalog_name}' blocked ({}) — not installed", summary.verdict);
                     // Deliberately do NOT remove `mod_id` from `announcer_downloads`:
-                    // unlike a transient network failure, a ModScan block isn't
-                    // something a retry can fix, and there's no user override on
-                    // this auto path — so this mod-id is never attempted again.
+                    // a ModScan block isn't something a retry can fix.
                 }
                 Err(e) => {
                     log_warn!("[PARTY] Could not fetch peer announcer '{catalog_name}': {e}");
@@ -818,15 +768,11 @@ impl PartyManager {
         self.broadcast_state();
     }
 
-    /// `PartyManager._lobby_check_loop` — updates each peer's `in_lobby`
-    /// flag every `LOBBY_CHECK_INTERVAL`. As of P0-F this no longer matches
-    /// summoner ids against the live lobby/champ-select roster (the relay
-    /// carries none) — instead `in_lobby` means "this peer's latest
-    /// VERIFIED selection targets a champion currently on my team", computed
-    /// against the same roster set `get_party_skins`'s gate uses. `false`
-    /// whenever that roster isn't available (no live champ-select session)
-    /// or the peer has no verified selection. Exits once `generation` is
-    /// stale (a later `enable()`/`disable()` superseded this run).
+    /// Updates each peer's `in_lobby` flag every `LOBBY_CHECK_INTERVAL`. As
+    /// of P0-F, `in_lobby` means "this peer's latest VERIFIED selection
+    /// targets a champion currently on my team" (same roster set
+    /// `get_party_skins` uses) — `false` when the roster is unavailable or
+    /// the peer has no verified selection. Exits once `generation` is stale.
     async fn lobby_check_loop(self: Arc<Self>, generation: u64) {
         loop {
             tokio::time::sleep(LOBBY_CHECK_INTERVAL).await;
@@ -896,9 +842,9 @@ impl PartyManager {
         self.broadcast_skin_update(champion_id, skin_id, chroma_id, custom_mod.as_ref(), announcer);
     }
 
-    /// The selected announcer, resolved back to its Library install record —
-    /// `Some((mod_id, display name))` only when it came from the Library
-    /// (peers can download the same id; hand-imported packs can't sync).
+    /// The selected announcer, resolved to its Library install record —
+    /// `Some((mod_id, name))` only when it came from the Library (peers can
+    /// download the same id; hand-imported packs can't sync).
     fn my_library_announcer(&self) -> Option<(String, String)> {
         let rel = self.skins.shared.lock_safe().category_mods.announcer.as_ref().map(|a| a.relative_path.clone())?;
         let app_state = self.app.state::<Arc<crate::AppState>>();
@@ -906,16 +852,13 @@ impl PartyManager {
         cfg.library.installed.iter().find(|(_, rec)| rec.file == rel).map(|(id, rec)| (id.clone(), rec.name.clone()))
     }
 
-    /// `PartyManager.broadcast_skin_update` — for a custom mod, share a
-    /// content hash instead of the file path (the peer resolves it locally
-    /// via `find_local_mod_by_hash`; the raw path/bytes never cross the wire).
-    /// A Library announcer selection rides along as its mod-id so peers can
-    /// download + convert the same pack and hear it too. Every selection is
-    /// signed (P0-F) with our ephemeral session key, bound to the relay's
-    /// current `(epoch, member_id)` — if we don't have a session yet (relay
-    /// just (re)connected, `welcome` hasn't arrived), this skips silently;
-    /// `handle_session_established` clears `last_broadcast` the moment the
-    /// session IS established, so the very next tick retries.
+    /// For a custom mod, share a content hash instead of the file path (the
+    /// peer resolves it locally via `find_local_mod_by_hash`; raw
+    /// path/bytes never cross the wire). A Library announcer selection
+    /// rides along as its mod-id. Every selection is signed (P0-F) with our
+    /// ephemeral session key, bound to the relay's current
+    /// `(epoch, member_id)` — with no session yet, this skips silently and
+    /// `handle_session_established` retries on the next tick.
     fn broadcast_skin_update(
         &self,
         champion_id: i64,
@@ -961,15 +904,12 @@ impl PartyManager {
 
     // ─── Party skins for injection ──────────────────────────────────────
 
-    /// `PartyManager.get_party_skins` (relay-flow path only — see this
-    /// module's doc comment). P0-F roster gate (hard, not advisory): a
-    /// peer's selection is only trusted when (a) its signature verifies
-    /// against their advertised pubkey, bound to the room's current epoch +
-    /// their member_id, (b) its champion_id is one of my CURRENT, live
-    /// champ-select teammates, and (c) no earlier (first-wins) peer this
-    /// pass already claimed that champion. Fails CLOSED — if the champ-select
-    /// session isn't available at all, nothing is trusted (see
-    /// `decide_peer_selection`).
+    /// P0-F roster gate (hard, not advisory): a peer's selection is only
+    /// trusted when (a) its signature verifies against their pubkey, bound
+    /// to the room's epoch + their member_id, (b) its champion_id is a
+    /// CURRENT live champ-select teammate, and (c) no earlier peer this pass
+    /// already claimed that champion. Fails CLOSED if the champ-select
+    /// session isn't available at all (see `decide_peer_selection`).
     pub async fn get_party_skins(&self) -> Vec<PartySkinData> {
         let session = {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -1049,11 +989,9 @@ impl PartyManager {
         skins
     }
 
-    /// `PartyManager.find_local_mod_by_hash` — scan every skin mod under
-    /// `paths::mods_dir()/skins/**` for a `.zip`/`.fantome` whose sha256
-    /// (truncated to 16 hex chars, matching `broadcast_skin_update`'s hash
-    /// length) equals `content_hash`. Returns the match's path relative to
-    /// `paths::mods_dir()` (forward-slash separated), or `None`.
+    /// Scan every skin mod under `mods_dir()/skins/**` for a `.zip`/`.fantome`
+    /// whose sha256 (truncated to 16 hex chars) equals `content_hash`.
+    /// Returns the match's path relative to `mods_dir()`, or `None`.
     pub fn find_local_mod_by_hash(content_hash: &str) -> Option<String> {
         let mods_root = paths::mods_dir();
         let skins_dir = mods_root.join("skins");
@@ -1090,10 +1028,9 @@ impl PartyManager {
 
     // ─── Injection staging (ported from `injection_hook.py`) ───────────
 
-    /// `PartyInjectionHook.prepare_party_mods` — stage every party skin
-    /// selection for injection, returning the extracted mod folder names
-    /// S5's trigger folds into `InjectionManager::inject_skin_immediately`'s
-    /// `extra_mod_names`.
+    /// Stage every party skin selection for injection, returning the
+    /// extracted mod folder names the trigger folds into
+    /// `InjectionManager::inject_skin_immediately`'s `extra_mod_names`.
     pub async fn prepare_party_mods(self: &Arc<Self>) -> Vec<String> {
         let mut folders: Vec<String> =
             self.get_party_skins().await.iter().filter_map(Self::prepare_skin_for_injection).collect();
@@ -1104,12 +1041,10 @@ impl PartyManager {
     }
 
     /// Stage a peer's synced announcer for this overlay — only when WE have
-    /// no announcer of our own selected (ours always wins; two announcer
-    /// packs in one overlay just collide on the same banks). Uses the first
-    /// peer broadcasting one whose pack is installed locally (downloaded by
-    /// `maybe_download_peer_announcer`, which already gated the download
-    /// itself behind signature verification + the Library catalog — nothing
-    /// further to verify here, just stage whatever's already on disk).
+    /// none selected (ours always wins; two announcer packs collide on the
+    /// same banks). Uses the first peer broadcasting one whose pack is
+    /// installed locally (already gated behind signature + Library catalog
+    /// verification by `maybe_download_peer_announcer`).
     fn prepare_peer_announcer(&self) -> Option<String> {
         if self.skins.shared.lock_safe().category_mods.announcer.is_some() {
             return None;
@@ -1139,12 +1074,10 @@ impl PartyManager {
         None
     }
 
-    /// `PartyInjectionHook._prepare_single_skin` — resolve one party
-    /// member's skin to a local ZIP (a matched custom mod, or the regular
-    /// skins-tree ZIP) and extract it into the injection mods directory via
-    /// the already-ported `injection::zips` module. Returns the extracted
-    /// mod's folder name, or `None` on any resolution/extraction failure
-    /// (matching the Python original's catch-all -> `None`).
+    /// Resolve one party member's skin to a local ZIP (a matched custom mod,
+    /// or the regular skins-tree ZIP) and extract it into the injection mods
+    /// directory. Returns the extracted mod's folder name, or `None` on any
+    /// resolution/extraction failure.
     fn prepare_skin_for_injection(skin_data: &PartySkinData) -> Option<String> {
         let source = if let Some(rel) = &skin_data.custom_mod_relative_path {
             let candidate = paths::mods_dir().join(rel);
@@ -1187,15 +1120,11 @@ impl PartyManager {
 
     // ─── Lobby matching (ported from `lobby_matcher.py`) ────────────────
 
-    /// Reshaped from `LobbyMatcher.get_team_champion_mapping` (which mapped
-    /// summoner_id -> champion_id, no longer possible without summoner ids
-    /// on the relay wire): champion ids of every OTHER player currently on
-    /// my live champ-select team (excludes my own cell via
-    /// `local_player_cell_id`). This is the authoritative set a peer's
-    /// broadcast `champion_id` must belong to before its selection is
-    /// trusted for injection (P0-F roster gate — see `get_party_skins`).
-    /// `None` when the champ-select session isn't available at all — the
-    /// caller fails closed on that, never trusting anything.
+    /// Champion ids of every OTHER player currently on my live champ-select
+    /// team (excludes my own cell). The authoritative set a peer's broadcast
+    /// `champion_id` must belong to before its selection is trusted (P0-F
+    /// roster gate — see `get_party_skins`). `None` when the champ-select
+    /// session isn't available — the caller fails closed on that.
     async fn live_roster_champion_ids(&self) -> Option<HashSet<i64>> {
         let auth = lcu::cached_auth()?;
         let session = lcu_ext::champ_select_session(&self.http_client, &auth).await?;
@@ -1256,10 +1185,9 @@ fn decide_peer_selection(
 
 /// Verify a relay member's broadcast `skin` signature against the room's
 /// CURRENT epoch and their `member_id` — binds it so a captured selection
-/// can't be replayed into a different room instance or reattributed to a
-/// different member. Logs + returns `false` on any failure (missing/
-/// malformed signature, wrong pubkey, tampered field) — a bad signature is
-/// always treated as "no selection", never partially trusted.
+/// can't be replayed into a different room or reattributed to a different
+/// member. Returns `false` on any failure; a bad signature is always
+/// treated as "no selection", never partially trusted.
 fn verify_member_skin(epoch: &str, member: &RelayMember, skin: &Value) -> bool {
     let Some(champion_id) = skin.get("champion_id").and_then(Value::as_i64) else { return false };
     let Some(skin_id) = skin.get("skin_id").and_then(Value::as_i64) else { return false };
@@ -1278,12 +1206,10 @@ fn verify_member_skin(epoch: &str, member: &RelayMember, skin: &Value) -> bool {
 }
 
 /// Confirm `mod_id` exists in the Library catalog's `announcer` category and
-/// return the CATALOG's own name for it — the peer's free-text name is
-/// never trusted for a local install record (see
-/// `maybe_download_peer_announcer`). Pages through `/catalog?category=
-/// announcer` (server-side filtered, so the scan stays small) up to a
-/// generous bound. `None` on "not found" OR any fetch failure — either way
-/// the caller does NOT download.
+/// return the CATALOG's own name — the peer's free-text name is never
+/// trusted for a local install record. Pages through `/catalog?category=
+/// announcer` up to a generous bound. `None` on "not found" or any fetch
+/// failure — either way the caller does NOT download.
 async fn lookup_announcer_in_catalog(endpoint: &str, allowed: &HashSet<String>, mod_id: &str) -> Option<String> {
     let http = crate::net::build_external_client(15.0, allowed.clone());
     let base = endpoint.trim_end_matches('/');
@@ -1309,9 +1235,7 @@ async fn lookup_announcer_in_catalog(endpoint: &str, allowed: &HashSet<String>, 
 }
 
 /// Resolve the relay URL: `CHUD_RELAY_URL` env wins, then the config's
-/// `party_relay_url`, then the deployed relay's default — ported from
-/// `ws_relay.py`'s `RELAY_URL = os.environ.get(<env>, _CONFIGURED_URL)`
-/// (env overrides configured; same precedence here, env var renamed).
+/// `party_relay_url`, then the deployed relay's default.
 fn resolve_relay_url(app: &AppHandle) -> String {
     if let Ok(url) = std::env::var("CHUD_RELAY_URL") {
         if !url.trim().is_empty() {
@@ -1329,8 +1253,7 @@ fn resolve_relay_url(app: &AppHandle) -> String {
     relay::DEFAULT_RELAY_URL.to_string()
 }
 
-/// `LobbyMatcher.get_my_summoner_id` + `get_my_summoner_name`, combined
-/// since both come from the same `/lol-summoner/v1/current-summoner` call.
+/// Summoner id + display name, both from `/lol-summoner/v1/current-summoner`.
 async fn my_summoner_info(client: &reqwest::Client, auth: &Auth) -> Option<(u64, String)> {
     let summoner = lcu_ext::current_summoner(client, auth).await?;
     // Riot is deprecating `summonerId` (0 on newer accounts); fall back to a
@@ -1372,9 +1295,7 @@ fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// Parse a relay member's `skin` JSON blob into a `PartySkinSelection`
-/// (ported from the `SkinSelection(...)` construction inline in
-/// `_on_relay_members_changed`).
+/// Parse a relay member's `skin` JSON blob into a `PartySkinSelection`.
 fn parse_skin_selection(skin: &Value) -> Option<PartySkinSelection> {
     let champion_id = skin.get("champion_id").and_then(Value::as_i64)?;
     let skin_id = skin.get("skin_id").and_then(Value::as_i64)?;
@@ -1392,9 +1313,8 @@ fn hash_file(path: &std::path::Path) -> Option<String> {
     Some(hex[..16].to_string())
 }
 
-/// `PartyManager._hash_custom_mod` — content hash of a custom mod file,
-/// truncated to 16 hex chars (matches `find_local_mod_by_hash`'s comparison
-/// length).
+/// Content hash of a custom mod file, truncated to 16 hex chars (matches
+/// `find_local_mod_by_hash`'s comparison length).
 fn hash_custom_mod(relative_path: &str) -> Option<String> {
     let full_path = paths::mods_dir().join(relative_path);
     if !full_path.exists() {
@@ -1430,11 +1350,9 @@ mod tests {
 
         let expected_hash = hash_file(&mod_file).unwrap();
 
-        // Point `paths::mods_dir()` isn't overridable here (it's a fixed
-        // %LOCALAPPDATA% path), so exercise the hashing/matching logic
-        // directly instead of through `find_local_mod_by_hash` — proves the
-        // truncated-hash comparison is content-based, which is the property
-        // that matters for cross-peer matching.
+        // `paths::mods_dir()` isn't overridable here, so exercise the
+        // hashing logic directly — proves the truncated-hash comparison is
+        // content-based, the property that matters for cross-peer matching.
         assert_eq!(expected_hash.len(), 16);
         assert_eq!(hash_file(&mod_file), Some(expected_hash));
 

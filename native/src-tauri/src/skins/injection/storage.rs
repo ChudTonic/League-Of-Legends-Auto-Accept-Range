@@ -1,12 +1,10 @@
 //! Mods category tree storage — ported from `injection\mods\storage.py`
-//! (`ModStorageService`) and `injection\mods\mod_manager.py` (`ModManager`).
+//! (`ModStorageService`) and `mod_manager.py` (`ModManager`).
 //!
-//! IMPORTANT CHANGE from the Python original (`docs/SKINS_PORT.md` §0): its
-//! `_ensure_mods_root_layout` `shutil.rmtree`'d any root-level folder it
-//! didn't recognize as a category — a data-loss trap for anything a future
-//! category rename (or a user's own experiment) left behind. This port only
-//! *logs* unknown root folders and leaves them alone; nothing under
-//! `mods/` is ever deleted just for being unrecognized.
+//! CHANGE from Python: its `_ensure_mods_root_layout` `shutil.rmtree`'d any
+//! unrecognized root-level folder — a data-loss trap for anything a category
+//! rename (or a user's own experiment) left behind. This port only *logs*
+//! unknown root folders; nothing under `mods/` is ever deleted for being unrecognized.
 
 #![allow(dead_code)] // consumed by S3+ (injector/bridge wiring)
 
@@ -101,9 +99,8 @@ impl ModStorageService {
         &self.mods_root
     }
 
-    /// Ensure `mods_root` contains all expected category folders. Unlike
-    /// the Python original, unrecognized root-level folders are only
-    /// logged, never deleted (see module doc comment).
+    /// Ensure `mods_root` contains all expected category folders.
+    /// Unrecognized root-level folders are only logged, never deleted.
     fn ensure_mods_root_layout(&self) {
         for category in ROOT_CATEGORIES {
             let _ = std::fs::create_dir_all(self.mods_root.join(category));
@@ -275,8 +272,7 @@ fn read_mod_description(candidate: &Path) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Clean the mods directory, unlinking junctions safely rather than
-/// following them into the (possibly huge, cached) target (ported from
-/// `ModManager.clean_mods_dir`).
+/// following them into the (possibly huge, cached) target.
 pub fn clean_mods_dir(mods_dir: &Path) {
     if !mods_dir.is_dir() {
         let _ = std::fs::create_dir_all(mods_dir);
@@ -301,10 +297,9 @@ pub fn clean_overlay_dir(overlay_dir: &Path) {
     let _ = std::fs::create_dir_all(overlay_dir);
 }
 
-/// Extract a ZIP-compatible skin archive into `mods_dir` (ported from
-/// `ModManager.extract_zip_to_mod`). The target folder name is the zip's
-/// file stem, matching the `--mods:<name>` argument `overlay::mk_run_overlay`
-/// builds from it.
+/// Extract a ZIP-compatible skin archive into `mods_dir`. The target folder
+/// name is the zip's file stem, matching the `--mods:<name>` argument
+/// `overlay::mk_run_overlay` builds from it.
 pub fn extract_zip_to_mod(mods_dir: &Path, zip_path: &Path) -> Result<PathBuf, ExtractError> {
     let stem = zip_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "mod".to_string());
     let target = mods_dir.join(&stem);

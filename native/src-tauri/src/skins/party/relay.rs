@@ -1,8 +1,6 @@
 //! Relay websocket client (S6) — ported from `party/network/ws_relay.py`
-//! (`PartyRelay`). Connects to the already-deployed Cloudflare Worker relay
-//! (`relay-worker/`, service name `chud-party-relay`) and speaks its PROTOCOL
-//! V2 wire contract exactly — see that crate's `src/lib.rs` module doc, which
-//! this client must match byte-for-byte:
+//! (`PartyRelay`). Connects to the deployed Cloudflare Worker relay
+//! (`relay-worker/`) and speaks its PROTOCOL V2 wire contract exactly:
 //!   client -> server: `{"type":"join","name":str,"pubkey":hex}`
 //!                     `{"type":"skin","skin":{...}|null}`
 //!                     `{"type":"leave"}`
@@ -10,23 +8,20 @@
 //!                     WebSocket control-frame ping; the worker string-matches
 //!                     literal text and replies with literal text `"pong"`).
 //!   server -> client: `{"type":"welcome","member_id":u64,"epoch":hex}` (sent
-//!                     once per connect — a FRESH `member_id` every time; see
-//!                     [`SessionCallback`])
+//!                     once per connect, a FRESH `member_id` every time)
 //!                     `{"type":"members","epoch":hex,
 //!                      "members":[{member_id,name,pubkey,skin?},...]}`
 //!                     (full roster, sent on every join/skin/leave — no diffs)
 //!
-//! v2 (P0-F) carries NO summoner ids at all: the server assigns each socket a
-//! random `member_id` clients cannot claim, and clients identify themselves
-//! only by a display `name` + an ed25519 `pubkey`. Every selection is signed
-//! (bound to the room's `epoch` + our `member_id`) by the party manager, not
-//! this module — this client just relays bytes and hands the manager the
-//! `welcome`/`members` payloads to act on.
+//! v2 (P0-F) carries NO summoner ids: the server assigns each socket a
+//! random `member_id`, and clients identify themselves only by a display
+//! `name` + an ed25519 `pubkey`. Every selection is signed (bound to the
+//! room's `epoch` + our `member_id`) by the party manager, not this module —
+//! this client just relays bytes and hands the manager the `welcome`/`members` payloads.
 //!
-//! The relay itself has a real (Cloudflare-issued) TLS cert, unlike the LCU's
-//! self-signed loopback cert `lcu_ws.rs` has to special-case — so this client
-//! uses plain `tokio_tungstenite::connect_async` (default cert validation)
-//! rather than a `danger_accept_invalid_certs` connector.
+//! The relay has a real (Cloudflare-issued) TLS cert, unlike the LCU's
+//! self-signed loopback cert, so this client uses plain
+//! `tokio_tungstenite::connect_async` (default cert validation).
 
 #![allow(dead_code)]
 
@@ -49,19 +44,17 @@ use crate::skins::slog::{log_info, log_warn};
 const PING_INTERVAL: Duration = Duration::from_secs(25);
 /// Initial-connect timeout (`PartyRelay.connect`'s `timeout: float = 15.0` default).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-/// Delay before retrying after an unexpected disconnect (not in the Python
-/// original, which never reconnects — see this module's fix-list: Chud adds
-/// auto-reconnect on top of the ported behavior).
+/// Delay before retrying after an unexpected disconnect — Python never
+/// reconnects; Chud adds auto-reconnect on top.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 pub const DEFAULT_RELAY_URL: &str = "wss://chud-party-relay.jivy26.workers.dev";
 
-/// `compute_room_key` — `sha256(str(host_summoner_id).encode() + host_key).hexdigest()[:32]`,
+/// `sha256(str(host_summoner_id).encode() + host_key).hexdigest()[:32]`,
 /// byte-exact with `ws_relay.py::compute_room_key` so a host and any joiner
 /// pasting their token independently derive the identical room key. As of
 /// P0-F the first argument is an EPHEMERAL per-`enable()` id, not a real
-/// summoner id — see `party::manager::enable_inner`'s doc comment; the hash
-/// itself doesn't care what the number means.
+/// summoner id — the hash doesn't care what the number means.
 pub fn compute_room_key(host_summoner_id: u64, host_key: &[u8; 32]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(host_summoner_id.to_string().as_bytes());
@@ -102,8 +95,7 @@ pub struct RelayMember {
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Outgoing commands queued from `PartyRelay`'s public methods to the
-/// connection task — mirrors the Python original's ad hoc `_send_json` call
-/// sites (`join`/`send_skin`/`disconnect`'s `{"type":"leave"}`).
+/// connection task.
 enum OutCmd {
     Join { name: String, pubkey: String },
     Skin(Option<Value>),
@@ -117,10 +109,9 @@ pub type MembersCallback = Arc<dyn Fn(Vec<RelayMember>) + Send + Sync>;
 
 /// Session-established callback: fired once per (re)connect, right after the
 /// server's `welcome` (a FRESH `member_id` + the room's `epoch`). The party
-/// manager uses this to (re)sign and rebroadcast its current selection bound
-/// to the new identity — a selection signed under a PRIOR member_id/epoch is
-/// unverifiable once the socket reconnects, so it is never replayed (see
-/// `RelayShared::last_join`'s doc comment).
+/// manager uses this to (re)sign and rebroadcast its selection bound to the
+/// new identity — a selection signed under a PRIOR member_id/epoch is
+/// unverifiable once reconnected, so it's never replayed.
 pub type SessionCallback = Arc<dyn Fn(u64, String) + Send + Sync>;
 
 struct RelayShared {
@@ -130,16 +121,14 @@ struct RelayShared {
     should_run: AtomicBool,
     members: StdMutex<Vec<RelayMember>>,
     /// Last `join` we sent (name, pubkey), so a RECONNECTED socket can
-    /// re-announce itself — without this a client that drops + reconnects
-    /// becomes a nameless ghost in the room until the user manually
-    /// re-enables party mode. The last SKIN is deliberately NOT kept here
-    /// (v2): its signature is bound to the OLD member_id + epoch and would
-    /// fail verification under the fresh session a reconnect gets, so
+    /// re-announce itself — without this it becomes a nameless ghost until
+    /// the user manually re-enables party mode. The last SKIN is
+    /// deliberately NOT kept here (v2): its signature is bound to the OLD
+    /// member_id/epoch and would fail verification on reconnect, so
     /// `on_session` triggers the manager to re-sign and rebroadcast instead.
     last_join: StdMutex<Option<(String, String)>>,
-    /// This connection's server-assigned identity, `(member_id, epoch)`, set
-    /// from the `welcome` message and kept fresh (epoch only) by every
-    /// `members` broadcast. `None` until the first `welcome` arrives.
+    /// This connection's server-assigned identity, `(member_id, epoch)`.
+    /// `None` until the first `welcome` arrives.
     my_session: StdMutex<Option<(u64, String)>>,
 }
 
@@ -154,13 +143,11 @@ pub struct PartyRelay {
 }
 
 impl PartyRelay {
-    /// `PartyRelay.connect` — attempts the initial connection synchronously
-    /// (bounded by `CONNECT_TIMEOUT`, matching the Python default) and, on
-    /// success, spawns the background task that owns the socket for the rest
-    /// of this relay's life (keepalive + receive + auto-reconnect). Returns
-    /// `None` on initial-connect failure, exactly like Python's `connect()`
-    /// returning `False` — the caller logs "party mode limited" and moves on
-    /// without starting any loops (mirrors `PartyManager.enable`).
+    /// Attempts the initial connection synchronously (bounded by
+    /// `CONNECT_TIMEOUT`) and, on success, spawns the background task that
+    /// owns the socket for the rest of this relay's life (keepalive +
+    /// receive + auto-reconnect). Returns `None` on initial-connect failure
+    /// — caller logs "party mode limited" and moves on without starting any loops.
     pub async fn connect(
         relay_url: &str,
         room_key: String,
@@ -242,16 +229,14 @@ impl PartyRelay {
 }
 
 /// Truncate a room key to its first 8 hex chars for log lines (never log the
-/// full key — it IS the room secret). Shared with `manager.rs`'s connect/
-/// reconnect logging rather than duplicated.
+/// full key — it IS the room secret).
 pub(crate) fn short_key(room_key: &str) -> &str {
     &room_key[..room_key.len().min(8)]
 }
 
 /// The connection task body: owns the socket, forwards `OutCmd`s to it,
 /// handles the ping/pong keepalive and the `welcome`/`members` messages, and
-/// reconnects on an unexpected drop (see this module's doc comment on why
-/// that's an addition over the Python original, which has no reconnect).
+/// reconnects on an unexpected drop (an addition over Python, which doesn't).
 async fn run_connection(
     first_ws: WsStream,
     relay_url: String,
@@ -319,12 +304,9 @@ async fn run_one_connection(
     ping_timer.tick().await; // first tick fires immediately — consume it so the real cadence is 25s.
 
     // Re-announce ourselves on (re)connect. On the FIRST connection this is
-    // None (the manager sends `join` right after connecting), so it's a
-    // no-op; on a RECONNECT it carries the last join, without which the
-    // fresh socket would be a nameless ghost the server never re-registers.
-    // The last SKIN is intentionally NOT replayed here — see
-    // `RelayShared::last_join`'s doc comment on why (its signature would no
-    // longer verify under this connection's fresh member_id/epoch).
+    // None (manager sends `join` right after connecting); on a RECONNECT it
+    // carries the last join, without which the socket becomes a nameless
+    // ghost. The last SKIN is intentionally NOT replayed (see `last_join`'s doc comment).
     {
         let join = shared.last_join.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some((name, pubkey)) = join {
@@ -432,9 +414,8 @@ mod tests {
     use super::*;
 
     /// Known-vector cross-check: this room key was computed independently by
-    /// Python (`hashlib.sha256(str(123456789).encode() + bytes(range(32))).hexdigest()[:32]`)
-    /// — proves this port derives the identical room key a Python-side host
-    /// or joiner would compute from the same token.
+    /// Python, proving this port derives the identical key a Python-side
+    /// host/joiner would compute from the same token.
     #[test]
     fn compute_room_key_matches_known_python_vector() {
         let key: [u8; 32] = (0u8..32).collect::<Vec<u8>>().try_into().unwrap();

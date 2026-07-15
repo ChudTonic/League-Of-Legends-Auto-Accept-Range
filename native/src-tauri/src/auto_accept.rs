@@ -16,13 +16,9 @@ fn backoff(base: f64, errors: u32, cap: f64) -> f64 {
     (base * factor).min(cap)
 }
 
-/// Consecutive transient failures to ride out at the fast poll cadence before
-/// escalating to exponential backoff. A ready-check accept window is only
-/// ~10-13s, so a single slow/failed LCU request must NOT put the poll loop to
-/// sleep for that whole window — the old code backed off 10s on the FIRST
-/// error, which could sleep straight through a queue pop and miss it. Keep
-/// polling at `check_interval` through a brief client hiccup and only back off
-/// once failures persist (the client is genuinely gone, not just hitching).
+/// Consecutive transient failures to ride out at fast poll cadence before backing
+/// off. A ready-check window is only ~10-13s, so backing off on the first error
+/// risks sleeping through a queue pop — only escalate once failures persist.
 const FAST_RETRY_GRACE: u32 = 4;
 
 /// Sleep duration after a failed poll: fast (`check_interval`) for the first
@@ -70,8 +66,7 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
 
     while current(&state, generation) {
         if auth.is_none() {
-            // Shared cache — other subsystems (ranked monitor, phase actor,
-            // ticker) read the same, so we avoid each loop doing its own full
+            // Shared cache with other subsystems, avoids each loop doing its own
             // process-table scan on LCU startup/reconnect.
             auth = lcu::cached_auth();
         }
@@ -88,10 +83,8 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                     state.client_online.store(true, Ordering::SeqCst);
                     *state.phase.lock_safe() = phase.clone();
 
-                    // Keep the websocket event task alive: it accepts the
-                    // instant a ready check fires, instead of at poll cadence.
-                    // The spawn slot prevents duplicates; the task clears it
-                    // when its socket drops, and we respawn on the next tick.
+                    // WS task accepts the instant a ready check fires instead of at
+                    // poll cadence; spawn slot prevents duplicates, cleared on drop.
                     if !state.ws_active.swap(true, Ordering::SeqCst) {
                         let ws_app = app.clone();
                         let ws_state = state.clone();
@@ -110,8 +103,7 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                                 log_info!("[AUTO-ACCEPT] Accepted ready check");
                                 state.stats.lock_safe().record_accept();
                             } else if !accepted {
-                                // Leave `readycheck_handled` false so the next
-                                // poll (or the WS task) retries within the window.
+                                // Leave `readycheck_handled` false so the next poll retries.
                                 log_warn!("[AUTO-ACCEPT] Accept request failed - retrying next poll");
                             }
                         }
@@ -122,12 +114,9 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                     sleep_interruptible(&state, generation, check_interval.max(0.2)).await;
                 }
                 None => {
-                    // Request failed — client likely closed OR restarted with a
-                    // fresh lockfile port. Invalidate the SHARED auth cache (not
-                    // just our local copy): the next poll re-reads the lockfile
-                    // and reconnects to the restarted client. Nulling only `auth`
-                    // would just re-fetch the SAME stale cached auth from
-                    // `cached_auth()` and stay "offline" forever after a restart.
+                    // Client closed or restarted on a new lockfile port. Invalidate the
+                    // SHARED cache (not just local `auth`) so the next poll re-reads the
+                    // lockfile instead of re-fetching the same stale cached auth.
                     lcu::invalidate_auth();
                     auth = None;
                     state.client_online.store(false, Ordering::SeqCst);
@@ -156,16 +145,13 @@ mod tests {
 
     #[test]
     fn a_single_transient_failure_retries_fast_not_through_the_ready_check_window() {
-        // The bug this guards: the old code backed off `backoff(5,1,30) = 10s`
-        // on the FIRST failure, long enough to sleep through a ~10-13s ready
-        // check. The first `FAST_RETRY_GRACE` failures must stay at the fast
-        // poll cadence instead.
+        // Guards against backing off 10s on the first failure, which could sleep
+        // through a ~10-13s ready check window.
         let (check, base, cap) = (1.0, 5.0, 30.0);
         for errors in 1..=FAST_RETRY_GRACE {
             assert_eq!(retry_sleep_secs(check, base, errors, cap), check, "failure #{errors} must retry fast");
         }
-        // Only once failures persist past the grace window do we back off — and
-        // then it ramps from the base, not from a huge first jump.
+        // Past the grace window, backoff ramps from the base, not a huge first jump.
         assert_eq!(retry_sleep_secs(check, base, FAST_RETRY_GRACE + 1, cap), backoff(base, 1, cap));
         assert!(retry_sleep_secs(check, base, FAST_RETRY_GRACE + 3, cap) <= cap);
     }

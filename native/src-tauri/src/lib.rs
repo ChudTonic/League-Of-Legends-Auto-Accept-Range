@@ -43,13 +43,12 @@ pub struct AppState {
     /// before spawning; the task clears it when it exits.
     pub ws_active: AtomicBool,
     pub auto_range_running: AtomicBool,
-    /// Ranked kill-switch consumed by Auto-Range's hold loop. Maintained by
-    /// the ALWAYS-RUNNING safety monitor (`safety_manager::spawn_safety_monitor`),
-    /// not by any individual tool. Skin injection does NOT read this — it
-    /// goes through `safety_manager::evaluate_injection_policy`.
+    /// Ranked kill-switch consumed by Auto-Range's hold loop. Maintained by the
+    /// ALWAYS-RUNNING safety monitor, not by any individual tool. Skin injection
+    /// does NOT read this — it goes through `safety_manager::evaluate_injection_policy`.
     pub injection_blocked: AtomicBool,
     /// Live gameflow/queue snapshot + policy state for the injection safety
-    /// gates (P0-A) — see `safety_manager.rs`.
+    /// gates — see `safety_manager.rs`.
     pub safety: safety_manager::SafetyManager,
     pub chat_open: AtomicBool,         // in-game chat open -> release the key
     pub chat_listener_started: AtomicBool,
@@ -57,28 +56,22 @@ pub struct AppState {
     pub auto_range_gen: AtomicU64,     // bumped each arm so a stale duplicate loop exits
     pub auto_accept_gen: AtomicU64,
     pub config_gen: AtomicU64,         // bumped on save so running loops live-reload settings
-    /// Skins subsystem shared state (S2+) — see `docs/SKINS_PORT.md`.
+    /// Skins subsystem shared state — see `docs/SKINS_PORT.md`.
     pub skins: Arc<skins::SkinsState>,
-    /// The phase actor's handle, set once during `setup()`. `lcu_ws.rs`
-    /// reads `input_tx` to fan events into it; later milestones (bridge S4,
-    /// ticker S5) will read `events` to subscribe. `None` only in the brief
-    /// window before `setup()` spawns it.
+    /// The phase actor's handle, set once during `setup()`. `lcu_ws.rs` reads
+    /// `input_tx` to fan events into it. `None` only before `setup()` spawns it.
     pub skins_phase: Mutex<Option<skins::phase::PhaseHandle>>,
-    /// The skins bridge server's handle (S4), set once during `setup()`.
-    /// Later milestones (S5 ticker/trigger, S6 party) hold a clone and call
-    /// its `broadcast_*` methods to push state to the Pengu Loader plugins —
-    /// see `skins::bridge::broadcast`. `None` only in the brief window
-    /// before `setup()` spawns it.
+    /// The skins bridge server's handle, set once during `setup()`. Holders
+    /// clone it and call its `broadcast_*` methods to push state to the Pengu
+    /// Loader plugins. `None` only before `setup()` spawns it.
     pub skins_bridge: Mutex<Option<skins::bridge::BridgeHandle>>,
-    /// The injection manager (S3), set once during `setup()`. S5's ticker /
-    /// trigger pull it from here (via the app handle) to run an injection at
-    /// the loadout deadline. `None` only before `setup()` builds it.
+    /// The injection manager, set once during `setup()`; pulled from here (via
+    /// the app handle) to run an injection at the loadout deadline. `None` only
+    /// before `setup()` builds it.
     pub skins_injection: Mutex<Option<Arc<skins::injection::InjectionManager>>>,
-    /// The party mode manager (S6), set once during `setup()` — after the
-    /// bridge, since it holds a `BridgeHandle` clone to push `party-state`
-    /// updates proactively (see `skins::party::manager::PartyManager`).
-    /// `bridge::handlers`'s party-* handlers pull it from here. `None` only
-    /// in the brief window before `setup()` builds it.
+    /// The party mode manager, set once during `setup()` after the bridge,
+    /// since it holds a `BridgeHandle` clone to push `party-state` updates
+    /// proactively. `None` only before `setup()` builds it.
     pub skins_party: Mutex<Option<Arc<skins::party::manager::PartyManager>>>,
 }
 
@@ -438,13 +431,11 @@ fn get_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
 }
 
 // ============================================================
-// Skins control panel (S9) — see `docs/SKINS_PORT.md` §5. These commands are
-// thin wrappers over the already-implemented skins subsystem (S1-S8); none
-// of them re-derive logic that already lives in `skins::*`. Party's
-// `party-state` broadcast (`PartyManager::broadcast_state`) goes out over
-// the in-client bridge WebSocket to the Pengu Loader plugins, NOT to this
-// Tauri webview, so there is no push event for party changes here — the
-// front-end polls `skins_party_get_state` while the Skins page is open.
+// Skins control panel — see `docs/SKINS_PORT.md` §5. These commands are thin
+// wrappers over the skins subsystem; none re-derive logic that lives in
+// `skins::*`. Party's `party-state` broadcast goes out over the in-client
+// bridge WebSocket to the Pengu Loader plugins, NOT to this Tauri webview, so
+// there is no push event here — the front-end polls `skins_party_get_state`.
 // ============================================================
 
 /// Disk/process checks shared by `skins_snapshot` and `skins_diagnostics` —
@@ -543,11 +534,9 @@ fn skins_get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
 }
 
 /// Persist a partial `SkinsCfg` update (only the keys present are applied —
-/// snake_case, matching `config::SkinsCfg`'s own field names, same contract
-/// `save_config` uses for the main config). Live-applies the auto-resume
-/// timeout to the running `InjectionManager` (`docs/SKINS_PORT.md`'s
-/// reconciliation note) since that field would otherwise need an app
-/// restart to take effect.
+/// snake_case, matching `config::SkinsCfg`'s field names). Live-applies the
+/// auto-resume timeout to the running `InjectionManager`, since that field would
+/// otherwise need an app restart to take effect.
 #[tauri::command]
 fn skins_save_settings(settings: serde_json::Value, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     let auto_resume = {
@@ -574,11 +563,9 @@ fn skins_save_settings(settings: serde_json::Value, state: tauri::State<Arc<AppS
         cfg.skins.monitor_auto_resume_timeout_secs
     };
     state.config_gen.fetch_add(1, Ordering::SeqCst);
-    // Clone the Arc out and DROP the `skins_injection` guard before calling
-    // into the manager: `set_auto_resume_timeout` takes the manager's inner
-    // + monitor locks, and the injection pipeline's policy hook now runs
-    // while those are held — holding this guard across the call would create
-    // a lock-order inversion.
+    // Clone the Arc out and DROP the `skins_injection` guard first:
+    // `set_auto_resume_timeout` takes the manager's inner+monitor locks, and
+    // holding this guard across the call would invert lock order.
     let mgr = state.skins_injection.lock_safe().clone();
     if let Some(mgr) = mgr {
         mgr.set_auto_resume_timeout(auto_resume);
@@ -586,11 +573,10 @@ fn skins_save_settings(settings: serde_json::Value, state: tauri::State<Arc<AppS
     skins_snapshot(&state)
 }
 
-/// Persist the versioned skin-injection risk acknowledgement (P0-A).
-/// `accepted: true` stamps the CURRENT disclosure version; `false` revokes
-/// (back to 0). The safety policy denies every injection entrypoint with
-/// `CONSENT_MISSING` while the stored version is below the current one, so
-/// revocation takes effect immediately — including mid-champ-select.
+/// Persist the versioned skin-injection risk acknowledgement. `accepted: true`
+/// stamps the current disclosure version; `false` revokes (back to 0). The
+/// safety policy denies every entrypoint with `CONSENT_MISSING` below the
+/// current version, so revocation takes effect immediately, mid-champ-select included.
 #[tauri::command]
 fn skins_set_ack(accepted: bool, app: AppHandle, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     {
@@ -651,20 +637,17 @@ fn skins_download(force: bool, app: AppHandle) {
     });
 }
 
-/// Activate the bundled Pengu Loader against the resolved League install
-/// path (the configured `league_path`, falling back to LCU auto-detection
-/// via `lcu_ext::resolve_game_dir` — the same "Game" folder `mkoverlay`'s
-/// `--game:` flag targets). Blocking (shells out to Pengu Loader's CLI) but
+/// Activate the bundled Pengu Loader against the resolved League install path
+/// (the configured `league_path`, falling back to LCU auto-detection via
+/// `lcu_ext::resolve_game_dir`). Blocking (shells out to Pengu Loader's CLI) but
 /// Tauri runs non-`async` commands on its own blocking thread pool, so this
 /// never stalls the webview.
 #[tauri::command]
 fn skins_activate_pengu(state: tauri::State<Arc<AppState>>) -> Result<serde_json::Value, String> {
-    // Pengu Loader modifies the League install (e.g. under C:\Riot Games), which
-    // Windows only permits with admin rights — a non-elevated launch of its CLI
-    // fails with "requires elevation" (os error 740), which the UI used to
-    // surface as a misleading "check that it's bundled / League path" error.
-    // Skin injection needs admin too, so gate here with a clear, actionable
-    // message. An elevated Chud spawns the (elevated) Pengu Loader fine.
+    // Pengu Loader modifies the League install, which Windows only permits with
+    // admin rights — a non-elevated launch fails with "requires elevation" (os
+    // error 740), which the UI used to surface as a misleading error. Gate here
+    // with a clear, actionable message instead.
     if !winutil::is_admin() {
         return Err("Chud needs to run as administrator to set up skins. Pengu Loader modifies your League install, which Windows only allows with admin rights (skin injection needs admin too). Close Chud, right-click it, choose \"Run as administrator,\" then click Activate again.".to_string());
     }
@@ -688,10 +671,9 @@ fn skins_activate_pengu(state: tauri::State<Arc<AppState>>) -> Result<serde_json
     }
 }
 
-/// Persist the Skins master enable/disable flag. ENFORCED (P0-A): the safety
-/// policy denies every injection entrypoint (build, suspend, LCU patch,
-/// run-overlay) with `DISABLED` while this is off — the phase actor/bridge/
-/// ticker still run and idle, but nothing they trigger can execute.
+/// Persist the Skins master enable/disable flag. Enforced: the safety policy
+/// denies every injection entrypoint with `DISABLED` while this is off — the
+/// phase actor/bridge/ticker still run and idle, but nothing they trigger can execute.
 #[tauri::command]
 fn skins_set_enabled(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     {
@@ -725,11 +707,10 @@ fn skins_set_customization(customization: serde_json::Value, state: tauri::State
     serde_json::to_value(state.config.lock_safe().client.clone()).unwrap_or_else(|_| json!({}))
 }
 
-/// The browsable skin catalog (every champ + its skins, flagged downloaded)
-/// for the favorites picker UI. Takes `_state` purely so it matches the shape
-/// of every other registered command — a zero-argument sync command did not
-/// register through `generate_handler!` (it was silently dropped from the
-/// command table, so `invoke("skins_catalog")` rejected as "not found").
+/// The browsable skin catalog (every champ + its skins, flagged downloaded) for
+/// the favorites picker. Takes `_state` only so it matches every other
+/// registered command — a zero-argument sync command was silently dropped from
+/// `generate_handler!`'s table, so `invoke("skins_catalog")` rejected as "not found".
 #[tauri::command]
 fn skins_catalog(_state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     let champions = skins::favorites::catalog(None);
@@ -789,8 +770,8 @@ fn skins_party_fallback_state(state: &AppState) -> serde_json::Value {
 }
 
 /// Enable party mode. Persists `party.enabled=true` only when `enable()`
-/// actually succeeds (P0-F: consent is checked inside `enable()` itself, so
-/// a not-yet-consented user's toggle never gets persisted as "on").
+/// actually succeeds — consent is checked inside `enable()` itself, so a
+/// not-yet-consented user's toggle never gets persisted as "on".
 #[tauri::command]
 async fn skins_party_enable(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let party = { state.skins_party.lock_safe().clone() };
@@ -841,10 +822,9 @@ fn skins_party_get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Valu
     }
 }
 
-/// Persist accepted/revoked party data-sharing consent (P0-F,
-/// `docs/PRIVACY-PARTY.md`). Revoking ALSO force-disables party mode and
-/// disconnects immediately — you can't stay connected with consent pulled
-/// (matches `PartyManager::enable`'s own consent re-check).
+/// Persist accepted/revoked party data-sharing consent (`docs/PRIVACY-PARTY.md`).
+/// Revoking ALSO force-disables party mode and disconnects immediately — you
+/// can't stay connected with consent pulled.
 #[tauri::command]
 async fn skins_party_set_consent(accepted: bool, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     {
@@ -865,9 +845,9 @@ async fn skins_party_set_consent(accepted: bool, state: tauri::State<'_, Arc<App
     Ok(party.get_state())
 }
 
-/// Persist the peer-announcer auto-download opt-in (P0-F) — off by default;
-/// see `PartyManager::maybe_download_peer_announcer`'s catalog-verification
-/// gate, which this toggle sits in front of.
+/// Persist the peer-announcer auto-download opt-in — off by default; see
+/// `PartyManager::maybe_download_peer_announcer`'s catalog-verification gate,
+/// which this toggle sits in front of.
 #[tauri::command]
 fn skins_party_set_auto_announcers(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     {
@@ -889,9 +869,8 @@ fn skins_party_set_auto_announcers(enabled: bool, state: tauri::State<Arc<AppSta
 /// auto-accept/skins subsystems.
 fn spawn_runes_auto_import(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
-        // LCU-only client (champ-select reads + rune/spell/item writes). The
-        // Worker fetch below gets its OWN external client — the LCU's
-        // `danger_accept_invalid_certs` must never be reused off loopback.
+        // LCU-only client. The Worker fetch below gets its OWN external client —
+        // the LCU's `danger_accept_invalid_certs` must never be reused off loopback.
         let http = lcu::build_lcu_client(6.0);
         let mut last_champ: Option<i64> = None;
         loop {
@@ -1119,12 +1098,10 @@ fn library_category_dir(category: &str) -> Option<&'static str> {
     }
 }
 
-/// ModScan result surfaced to the UI before a downloaded mod is written to
-/// disk (see `scan_downloaded_mod`). `vt` is the chud-skins Worker's
-/// reputation lookup response verbatim, when the lookup succeeded — a
-/// timeout/miss/offline just leaves it `None` rather than blocking anything;
-/// VT is an escalation signal on top of the structural scan, never a
-/// required gate on its own.
+/// ModScan result surfaced to the UI before a downloaded mod is written to disk
+/// (see `scan_downloaded_mod`). `vt` is the Worker's reputation lookup verbatim
+/// when it succeeded; a timeout/miss/offline leaves it `None`. VT only escalates
+/// the structural scan verdict, never gates on its own.
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct ScanSummary {
     pub(crate) verdict: String,
@@ -1154,13 +1131,10 @@ fn verdict_str(v: modscan_core::Verdict) -> &'static str {
     }
 }
 
-/// Scan a just-downloaded mod's bytes IN MEMORY, before anything is written
-/// to disk — that's the whole point of ModScan: a malicious archive never
-/// touches the filesystem unless the caller explicitly overrides
-/// (`place_library_mod`'s `force`). The structural scan is sync/CPU-bound so
-/// it runs on a blocking thread; the reputation lookup is a best-effort
-/// network call layered on top that can only make the verdict worse, never
-/// better, and never turns into a hard error for the caller.
+/// Scan a just-downloaded mod's bytes IN MEMORY before anything is written to
+/// disk — a malicious archive never touches the filesystem unless the caller
+/// explicitly overrides (`force`). Structural scan runs on a blocking thread;
+/// the reputation lookup on top can only worsen the verdict, never error out.
 async fn scan_downloaded_mod(
     endpoint: &str,
     allowed: &std::collections::HashSet<String>,
@@ -1187,10 +1161,8 @@ async fn scan_downloaded_mod(
         }
     };
 
-    // Best-effort VirusTotal reputation via the chud-skins Worker (already
-    // allowlisted — see `net::BUILT_IN_HOSTS`). Any failure (timeout, 404,
-    // offline) just yields `None`; it must never turn a Clean/Suspicious
-    // verdict into a hard error.
+    // Best-effort VirusTotal reputation via the chud-skins Worker. Any failure
+    // just yields `None`; must never turn a Clean/Suspicious verdict into an error.
     let vt_json = net::get_json_checked(
         http,
         &format!("{}/reputation/{}", endpoint.trim_end_matches('/'), report.sha256),
@@ -1213,9 +1185,8 @@ async fn scan_downloaded_mod(
     let effective = vt_escalation.map(|vt| worse_verdict(report.verdict, vt)).unwrap_or(report.verdict);
     let verdict = verdict_str(effective);
     let n = report.findings.len();
-    // Always log the scan outcome (positive confirmation it ran), not just the
-    // scary cases — a clean scan used to be completely silent, which made
-    // "scanned & clean" indistinguishable from "scanner never ran".
+    // Always log the outcome, not just the scary cases — a silent clean scan was
+    // indistinguishable from "scanner never ran".
     let short_sha: String = report.sha256.chars().take(12).collect();
     let vt_note = vt_json
         .as_ref()
@@ -1241,21 +1212,13 @@ async fn scan_downloaded_mod(
     }
 }
 
-/// Install a mod: resolve its download from the Worker (served from our R2),
-/// then drop the `.fantome` into the custom-mod store so the in-client "Custom
-/// Mods" button surfaces it — champion skins under `mods/skins/{champ*1000}`
-/// (matched by champion in champ select), maps/announcers/fonts/etc. under
-/// their own `mods/{category}` folder (matched by the wheel's category tabs).
-/// No separate "apply" step. The install record (config) persists across
-/// updates; `rec.file` is the path relative to `mods/` so removal can find it.
 /// Download one Library mod from the Worker (our R2), scan it IN MEMORY
-/// (ModScan), and place it in the custom-mod store, returning the install
-/// record (WITHOUT touching config — the caller records it, so
-/// `library_install_bundle` can batch a whole pack under one save) alongside
-/// the scan summary. Shared by single install and bundle install. When the
-/// scan blocks (`Suspicious`/`Malicious`) and `force` is false, NOTHING is
-/// written to disk — the returned record is `None` and the caller must treat
-/// that as "not installed."
+/// (ModScan), and place it in the custom-mod store: champion skins under
+/// `mods/skins/{champ*1000}`, everything else under `mods/{category}`. Shared
+/// by single and bundle install — returns the record without touching config
+/// so the caller can batch a save. When the scan blocks (`Suspicious`/
+/// `Malicious`) and `force` is false, nothing is written; the returned record
+/// is `None`, which the caller must treat as "not installed."
 pub(crate) async fn place_library_mod(
     app: Option<&AppHandle>,
     base: &str,
@@ -1281,34 +1244,28 @@ pub(crate) async fn place_library_mod(
         }
     };
 
-    // Resolve URL: the Worker's small JSON response (capped generously; it's
-    // never more than a URL + metadata).
+    // Resolve URL: the Worker's small JSON response (capped generously).
     let dl = net::get_json_checked(http, &format!("{base}/download/{mod_id}"), allowed, 16 * 1024 * 1024)
         .await
         .map_err(|e| { log_warn!("[LIBRARY] download-resolve failed for {mod_id}: {e}"); e })?;
     let url = dl.get("url").and_then(|v| v.as_str()).ok_or("could not resolve download")?.to_string();
-    // Binary .fantome/.zip download — capped at 512MB (bundle-sized announcer/
-    // skin packs stay well under this; this is a sanity ceiling, not a target).
+    // Binary .fantome/.zip download — 512MB is a sanity ceiling, not a target.
     let raw_bytes = net::get_bytes_checked(http, &url, allowed, 512 * 1024 * 1024).await?;
-    // A tiny body is the Worker's 404 ("not found") — the file isn't mirrored /
-    // resolvable yet. Treat as a real failure so a bundle reports it, not a
-    // 9-byte .fantome written to disk.
+    // A tiny body is the Worker's 404 (not mirrored/resolvable yet) — treat as a
+    // real failure so a bundle reports it, not a 9-byte .fantome written to disk.
     if raw_bytes.len() < 1024 {
         return Err(format!("'{name}' isn't available yet (still mirroring) — try again shortly."));
     }
 
-    // ModScan: scan the downloaded bytes IN MEMORY before anything below
-    // touches disk. A blocking verdict without `force` stops here — nothing
-    // is written, nothing is converted, nothing is recorded.
+    // Scan IN MEMORY before anything below touches disk; a blocking verdict
+    // without `force` stops here.
     let summary = scan_downloaded_mod(base, allowed, http, raw_bytes.clone(), name).await;
     if summary.blocking && !force {
         return Ok((None, summary));
     }
 
-    // Announcer packs: retarget the global announcer banks so the pack works
-    // on SR, ARAM (classic + Bloom variant), and Nexus Blitz — done once here
-    // at download time, never during a live champ select. The UI swaps its
-    // download bar to a "Converting for all modes…" phase on this event.
+    // Announcer packs: retarget the global announcer banks so the pack works on
+    // SR, ARAM, and Nexus Blitz — done once at download time, never mid-champ-select.
     let bytes: Vec<u8> = if category == "announcer" {
         if let Some(app) = app {
             let _ = app.emit("library-install-phase", json!({ "modId": mod_id, "phase": "converting" }));
@@ -1364,11 +1321,10 @@ async fn announcer_studio_build(
     Ok(serde_json::to_value(result).unwrap_or_else(|_| json!({"ok": false})))
 }
 
-/// Install a single Library mod, gated behind ModScan (see
-/// `place_library_mod`). Returns `{status: "installed"|"blocked", scan,
-/// record}` — `force` lets the user explicitly override a blocked verdict
-/// after seeing the scan warning; it defaults to `false` so a bare call
-/// never silently installs something flagged.
+/// Install a single Library mod, gated behind ModScan (see `place_library_mod`).
+/// Returns `{status: "installed"|"blocked", scan, record}` — `force` lets the
+/// user override a blocked verdict after seeing the warning; defaults `false`
+/// so a bare call never silently installs something flagged.
 #[tauri::command]
 async fn library_install(
     app: AppHandle,
@@ -1447,9 +1403,8 @@ async fn library_install_bundle(
     let http = net::build_external_client(180.0, allowed.clone());
     log_info!("[LIBRARY] installing bundle '{champ}' ({} skins)", skins.len());
 
-    // Bundles are batch installs: a blocked skin is reported (not force-
-    // installed) — there's no bundle-wide override in v1, the user installs
-    // a blocked one individually if they choose to accept the risk.
+    // A blocked skin is reported, not force-installed — no bundle-wide override;
+    // the user installs a blocked one individually if they accept the risk.
     let mut recs: Vec<(String, config::InstalledMod)> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     let mut blocked: Vec<serde_json::Value> = Vec::new();
@@ -1490,9 +1445,8 @@ fn library_remove(mod_id: String, state: tauri::State<Arc<AppState>>) -> serde_j
     use skins::slog::log_info;
     let mut c = state.config.lock_safe();
     if let Some(rec) = c.library.installed.remove(&mod_id) {
-        // `rec.file` is now relative to `mods/` (e.g. "skins/202000/X.fantome"
-        // or "maps/X.fantome"). Older builds stored it relative to `mods/skins`
-        // or under the legacy `library/` dir — try all three.
+        // `rec.file` is relative to `mods/`; older builds stored it relative to
+        // `mods/skins` or the legacy `library/` dir — try all three.
         let _ = std::fs::remove_file(skins::paths::mods_dir().join(&rec.file));
         let _ = std::fs::remove_file(skins::paths::mods_dir().join("skins").join(&rec.file));
         let _ = std::fs::remove_file(library_mods_dir().join(&rec.file));
@@ -1504,8 +1458,8 @@ fn library_remove(mod_id: String, state: tauri::State<Arc<AppState>>) -> serde_j
 
 /// Import the current-patch best runes + summoner spells + item build for your
 /// locked champion into the live client, via the runes Worker + the local LCU.
-/// Manual trigger for an "Import build" button; the (future) auto-import on
-/// champ-lock calls the same `runes::import_now`. No Riot Web API key involved.
+/// Manual trigger for an "Import build" button (`spawn_runes_auto_import` calls
+/// the same `runes::import_now` on champ-lock). No Riot Web API key involved.
 #[tauri::command]
 async fn runes_import_now(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let (enabled, endpoint, sort, allowed) = {
@@ -1539,10 +1493,9 @@ struct UpdateInfo {
 }
 
 /// On startup, check GitHub Releases for a signed newer version and, if one
-/// exists, emit `update-available` to the UI. We deliberately do NOT auto-
-/// install on launch anymore — the user clicks the in-app pill to update on
-/// their own schedule, so relaunching mid-game never forces downtime.
-/// Best-effort: any failure just logs and the current version keeps running.
+/// exists, emit `update-available` to the UI. Deliberately does NOT auto-install
+/// — the user clicks the in-app pill on their own schedule, so relaunching
+/// mid-game never forces downtime. Best-effort: any failure just logs.
 async fn run_startup_update_check(app: AppHandle) {
     use tauri_plugin_updater::UpdaterExt;
     let Ok(updater) = app.updater() else {
@@ -1578,11 +1531,7 @@ async fn updater_check(app: AppHandle) -> Option<UpdateInfo> {
 }
 
 /// Download + install the pending update with progress events, then relaunch.
-/// First kills any lingering `mod-tools.exe`/runoverlay processes: they hold
-/// `cslol-tools\mod-tools.exe` open, and the NSIS installer (silent or manual)
-/// fails with "Error opening file for writing" if it can't overwrite them —
-/// the exact error a stale overlay from an earlier game causes. Emits
-/// `update-progress` ({downloaded,total}) so the UI can render a themed bar.
+/// Emits `update-progress` (`{downloaded,total}`) so the UI can render a themed bar.
 #[tauri::command]
 async fn updater_install(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
@@ -1590,12 +1539,10 @@ async fn updater_install(app: AppHandle) -> Result<(), String> {
     use crate::skins::slog::{log_info, log_warn};
 
     log_info!("[update] user requested install - preparing");
-    // NOTE: intentionally NOT killing mod-tools here. Since cslol-tools now run
-    // from user-data (not the install folder), the installer never touches them,
-    // so there's nothing to unlock — and `kill_all_modtools_processes` takes a
-    // blocking lock on the injection mutex that a live in-game overlay holds for
-    // the whole match, which would hang the update. The install is lock-safe on
-    // its own now.
+    // Intentionally NOT killing mod-tools: cslol-tools now run from user-data (not
+    // the install folder), so the installer never touches them, and
+    // `kill_all_modtools_processes` would block on the injection mutex a live
+    // in-game overlay holds for the whole match, hanging the update.
 
     let updater = app.updater().map_err(|e| {
         log_warn!("[update] updater unavailable: {e}");
@@ -1746,12 +1693,10 @@ pub fn run() {
             updater_install
         ])
         .setup(|app| {
-            // Auto-start Auto-Accept (matches the Python app's auto_start_main).
             let handle = app.handle().clone();
             let st = app.state::<Arc<AppState>>().inner().clone();
             // Only arm Auto-Accept on launch if the user left it enabled — its
-            // on/off state is persisted (config.auto_accept.enabled), so a
-            // disable survives a restart instead of re-arming every time.
+            // on/off state is persisted, so a disable survives a restart.
             if st.config.lock_safe().auto_accept.enabled {
                 st.running.store(true, Ordering::SeqCst);
                 spawn_auto_accept(&handle, st.clone());
@@ -1762,69 +1707,55 @@ pub fn run() {
             spawn_runes_auto_import(st.clone());
             spawn_appear_offline(st.clone());
 
-            // Auto-update: on startup, silently check GitHub Releases for a
-            // signed newer version, install it, and relaunch. This is what lets
-            // users (e.g. a friend/family member) stop swapping the exe by hand.
-            // Best-effort: any failure just logs and the app runs the current
-            // version. `cfg!(debug_assertions)` skips it in dev builds.
+            // Auto-update: silently check GitHub Releases for a signed newer
+            // version and surface the pill. Best-effort: any failure just logs
+            // and the app runs the current version. Skipped in dev builds.
             if !cfg!(debug_assertions) {
                 let update_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    // Check once shortly after launch, then every 30 min while the
-                    // app stays open — so a release published mid-session surfaces
-                    // the "update available" pill without needing a restart.
+                    // Check shortly after launch, then every 10 min while the app
+                    // stays open, so a release published mid-session surfaces the
+                    // pill without a restart. Cheap: a tiny GitHub CDN fetch.
                     run_startup_update_check(update_handle.clone()).await;
                     loop {
-                        // Re-check every 10 min while the app is open so a freshly
-                        // published release surfaces the update pill on its own,
-                        // no restart needed. The endpoint is a tiny static-file
-                        // fetch (GitHub CDN), so this cadence is essentially free.
                         tokio::time::sleep(std::time::Duration::from_secs(10 * 60)).await;
                         run_startup_update_check(update_handle.clone()).await;
                     }
                 });
             }
 
-            // Skins phase engine (S2): always spawned — it just idles (poll
-            // fallback finds no LCU auth, WS fan-out has nothing to send)
-            // when the skins subsystem has no client to watch. Cheaper than
-            // gating on a not-yet-existent settings flag and respawning later.
+            // Skins phase engine: always spawned — it just idles (poll fallback
+            // finds no LCU auth, WS fan-out has nothing to send) when there's no
+            // client to watch. Cheaper than gating on a settings flag.
             let phase_handle = skins::phase::spawn(handle.clone(), st.skins.clone());
 
-            // Skins bridge server (S4): the local axum server the in-client
-            // Pengu Loader plugins connect to. `InjectionManager` is
-            // constructed here (nothing else in the app owns one yet) with
-            // the standard bundled-tools/injection-tree paths; `set_game_dir`
-            // is left unset this milestone (S5's game-flow wiring resolves
-            // the League install directory and calls it). `bridge::spawn`
-            // only needs to `subscribe()` the phase actor's events (a
-            // `&self` method), so it borrows `phase_handle` rather than
-            // consuming it — `PhaseHandle` isn't `Clone`, and `skins_phase`
-            // below still needs to own it for `lcu_ws.rs`'s fan-out.
+            // Skins bridge server: the local axum server the in-client Pengu
+            // Loader plugins connect to. `bridge::spawn` only needs to
+            // `subscribe()` the phase actor's events, so it borrows
+            // `phase_handle` rather than consuming it — `PhaseHandle` isn't
+            // `Clone`, and `skins_phase` below still needs to own it for
+            // `lcu_ws.rs`'s fan-out.
             let injection_manager = std::sync::Arc::new(skins::injection::InjectionManager::new(
                 skins::injection::tools::cslol_tools_dir(),
                 skins::paths::injection_mods_dir(),
                 skins::paths::skins_dir(),
                 skins::paths::injection_overlay_dir(),
             ));
-            // P0-A: wire the safety policy hook into the injection pipeline
-            // (manager entry, game-suspend watcher, mkoverlay/runoverlay) and
-            // start the ALWAYS-RUNNING ranked/queue monitor. Until the hook
-            // is set the pipeline fails closed; the monitor is what keeps the
-            // policy's gameflow snapshot fresh (a stale snapshot also denies).
+            // Wire the safety policy hook into the injection pipeline (manager
+            // entry, game-suspend watcher, mkoverlay/runoverlay) and start the
+            // ALWAYS-RUNNING ranked/queue monitor. Until the hook is set the
+            // pipeline fails closed; the monitor keeps the policy's gameflow
+            // snapshot fresh (a stale snapshot also denies).
             injection_manager.set_policy_hook(safety_manager::make_policy_hook(st.clone()));
             safety_manager::spawn_safety_monitor(handle.clone(), st.clone());
-            // Apply the configured auto-resume safety timeout (defaults to
-            // `GameMonitor`'s own 25s default; clamped 1..=180s either way).
-            // Bound to a local FIRST: holding the config guard across this
-            // call would invert the config->inner->monitor lock order the
-            // policy hook now establishes in the other direction.
+            // Apply the configured auto-resume safety timeout. Bound to a local
+            // FIRST: holding the config guard across this call would invert the
+            // config->inner->monitor lock order the policy hook establishes.
             let auto_resume_secs = st.config.lock_safe().skins.monitor_auto_resume_timeout_secs;
             injection_manager.set_auto_resume_timeout(auto_resume_secs);
-            // Startup sweep: auto-fix custom mods imported while Chud was
-            // closed (scope champion skins, retarget announcer packs). Cheap
-            // when nothing changed; ChampSelect entry re-sweeps for files
-            // dropped while running.
+            // Startup sweep: auto-fix custom mods imported while Chud was closed
+            // (scope champion skins, retarget announcer packs). ChampSelect entry
+            // re-sweeps for files dropped while running.
             {
                 let sweep_app = handle.clone();
                 tauri::async_runtime::spawn_blocking(move || {
@@ -1838,23 +1769,20 @@ pub fn run() {
                 &phase_handle,
             );
             *st.skins_bridge.lock_safe() = Some(bridge_handle.clone());
-            // Stash the injection manager so S5's ticker/trigger can pull it
-            // from the app handle at the loadout deadline.
+            // Stash the injection manager so the ticker/trigger can pull it from
+            // the app handle at the loadout deadline.
             *st.skins_injection.lock_safe() = Some(injection_manager);
 
-            // Party mode manager (S6): built after the bridge so it can hold
-            // a `BridgeHandle` clone to push `party-state` updates the
-            // moment the relay's member list changes, not just on request
-            // (see `PartyManager::handle_members_update`).
+            // Party mode manager: built after the bridge so it can hold a
+            // `BridgeHandle` clone to push `party-state` updates the moment the
+            // relay's member list changes, not just on request.
             let party_manager = skins::party::manager::PartyManager::new(&handle, st.skins.clone(), bridge_handle);
             *st.skins_party.lock_safe() = Some(party_manager.clone());
 
-            // Party mode (P0-F): NO auto-connect. A fresh install (or an
-            // upgrade from the old always-on auto-enable era) makes zero
-            // relay connections until the user has both turned Party on AND
-            // accepted the current data-sharing disclosure version (see
-            // docs/PRIVACY-PARTY.md). `enable()` itself re-checks consent —
-            // this is just the startup-resume path for a user who already did.
+            // NO auto-connect: zero relay connections until the user has both
+            // turned Party on AND accepted the current disclosure version (see
+            // docs/PRIVACY-PARTY.md). `enable()` re-checks consent itself — this
+            // is just the startup-resume path for a user who already did.
             let (party_enabled, party_consent_version) = {
                 let c = st.config.lock_safe();
                 (c.party.enabled, c.party.consent_version)

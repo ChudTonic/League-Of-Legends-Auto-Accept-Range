@@ -1,24 +1,15 @@
-//! LCU WebSocket event feed. The client exposes a WAMP-style event socket on
-//! the same loopback port as the REST API; subscribing to the gameflow-phase
-//! event delivers ready-check notification the instant it happens, instead of
-//! waiting for the next poll tick. The polling loop in `auto_accept` stays as
-//! the fallback (and covers the state already in effect at connect time).
+//! LCU WebSocket event feed on the same loopback port as REST. Subscribing to
+//! gameflow-phase delivers ready-check notice instantly instead of waiting for
+//! the next poll tick; `auto_accept`'s poller stays as fallback.
 //!
-//! Lifecycle: `auto_accept::run` owns a spawn slot (`AppState::ws_active`).
-//! This task clears the slot when it returns, so the poller respawns it on its
-//! next tick — connection drops and client restarts self-heal at poll cadence.
-//! It also carries the poller's `generation`: a superseded task (rapid
-//! off→on toggle bumped `auto_accept_gen` past it) exits on its next loop
-//! check instead of running on — and possibly racing its replacement — with
-//! stale auth.
+//! Lifecycle: owned by `auto_accept::run`'s spawn slot (`AppState::ws_active`),
+//! cleared on return so the poller respawns it; carries the poller's `generation`
+//! so a superseded task exits instead of racing its replacement with stale auth.
 //!
-//! Fan-out (S2): this is the one LCU websocket connection the app keeps
-//! open, so besides driving auto-accept it also forwards champ-select
-//! session / hovered-champion-id events into the skins subsystem's phase
-//! actor (`skins::phase`) — see `docs/SKINS_PORT.md`'s "one WS connection
-//! total, not two". Forwarding is best-effort (`try_send`, never blocks this
-//! loop) and silently no-ops before the phase actor has been spawned or if
-//! its channel is full — the phase actor's own poll fallback covers the gap.
+//! Also forwards champ-select session/hovered-champion events into the skins
+//! phase actor — the only LCU websocket kept open, per `docs/SKINS_PORT.md`'s
+//! "one WS connection total." Best-effort (`try_send`, never blocks); the phase
+//! actor's poll fallback covers gaps.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -76,8 +67,7 @@ async fn stream_events(app: &AppHandle, state: &Arc<AppState>, auth: &lcu::Auth,
     let client = lcu::build_lcu_client(timeout);
 
     while state.running.load(Ordering::SeqCst) && state.auto_accept_gen.load(Ordering::SeqCst) == generation {
-        // Bounded wait so a "stop" toggle is honored within ~1s even when the
-        // socket is silent (which is most of the time).
+        // Bounded wait so a "stop" toggle is honored within ~1s even when idle.
         let msg = match tokio::time::timeout(Duration::from_secs(1), ws.next()).await {
             Err(_) => continue,           // no event yet — re-check running flag
             Ok(None) => break,            // socket closed (client shut down)
@@ -132,9 +122,8 @@ async fn stream_events(app: &AppHandle, state: &Arc<AppState>, auth: &lcu::Auth,
     Some(())
 }
 
-/// Best-effort fan-out into the skins phase actor's channel — see the
-/// module doc. `try_send` never blocks this loop; a full/missing channel
-/// just means the phase actor's poll fallback picks up the change instead.
+/// Best-effort fan-out into the skins phase actor's channel (see module doc).
+/// `try_send` never blocks; a full/missing channel falls back to its own poll.
 fn forward_phase_input(state: &Arc<AppState>, input: PhaseInput) {
     let tx: Option<Sender<PhaseInput>> = state.skins_phase.lock_safe().as_ref().map(|h| h.input_tx.clone());
     if let Some(tx) = tx {

@@ -1,21 +1,13 @@
 //! Chroma selection state machine — ported from `ui/chroma/selection_handler.py`
-//! (`ChromaSelectionHandler.handle_selection`) with `ui/chroma/selector.py`'s
-//! per-champion special-case dispatch (Elementalist Lux forms, Sahn Uzal
-//! Mordekaiser forms, Spirit Blossom Morgana, Radiant Sett, KDA Seraphine,
-//! Viego, and the two Risen Legend HOL chromas) collapsed onto the single
-//! `features::special::FORMS` table instead of six near-identical
-//! `is_x_form`/`_handle_x_form_selection` method pairs.
+//! (`ChromaSelectionHandler.handle_selection`), with `ui/chroma/selector.py`'s
+//! six near-identical per-champion form handlers (Elementalist Lux, Sahn Uzal
+//! Mordekaiser, Spirit Blossom Morgana, Radiant Sett, KDA Seraphine, Viego,
+//! Risen Legend HOL chromas) collapsed onto `features::special::FORMS`.
 //!
-//! `ui/chroma/panel.py`'s Qt-era widget bookkeeping (button visibility,
-//! rebuild/destroy requests, split-circle chroma colour tracking) is NOT
-//! ported: the Python original's own comments call that manager "headless" already (no Qt
-//! widgets left, JS plugins own the button), and the colour-tracking fields
-//! it kept are UI/bridge-broadcast payload, not shared session state — that
-//! lands in `bridge::broadcast` (S4). These functions are pure `&mut
-//! SkinsShared` mutations; the S4 bridge handler that calls them owns
-//! broadcasting the resulting state to the JS plugins afterward (documented
-//! seam — no callback/channel parameter here, since nothing consumes one
-//! yet and a stub would just be dead weight until S4 wires the real thing).
+//! `ui/chroma/panel.py`'s Qt widget bookkeeping is NOT ported (already
+//! headless in Python; JS plugins own the button). These functions are pure
+//! `&mut SkinsShared` mutations — the S4 bridge handler that calls them owns
+//! broadcasting the resulting state (no callback param here; nothing consumes one yet).
 
 #![allow(dead_code)]
 
@@ -51,12 +43,8 @@ pub fn handle_selection(
     shared.pending_chroma_selection = false;
 }
 
-/// `_handle_elementalist_form_selection` / `_handle_mordekaiser_form_selection`
-/// / `_handle_morgana_form_selection` / `_handle_sett_form_selection` /
-/// `_handle_seraphine_form_selection` / `_handle_viego_form_selection` /
-/// `_handle_hol_chroma_selection` — one consolidated body, since every one of
-/// those seven Python methods did the same four things against a different
-/// hard-coded base ID.
+/// Consolidates the 7 near-identical Python `_handle_*_form_selection`
+/// methods (one per champion) into a single body parameterized by `form`.
 fn handle_form_selection(
     shared: &mut SkinsShared,
     cache: Option<&ChampionSkinCache>,
@@ -96,11 +84,9 @@ fn handle_base_skin_selection(shared: &mut SkinsShared, cache: Option<&ChampionS
     }
 }
 
-/// `_handle_regular_chroma_selection`. The Python original also stripped a
-/// stale chroma-ID suffix off `panel.current_skin_name` before re-appending
-/// the new one; that hack existed only because the Qt panel cached a mutable
-/// display string. We look the base name up fresh from the scraper cache
-/// every time, so there's nothing to strip.
+/// `_handle_regular_chroma_selection`. Python stripped a stale chroma-ID
+/// suffix off a cached Qt panel display string before re-appending; we look
+/// the base name up fresh each time, so there's nothing to strip.
 fn handle_regular_chroma_selection(
     shared: &mut SkinsShared,
     cache: Option<&ChampionSkinCache>,

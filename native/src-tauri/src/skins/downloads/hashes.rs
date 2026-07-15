@@ -1,10 +1,8 @@
 //! Game hash table downloader — ported from `utils\download\hash_updater.py`
-//! (`update_hash_files`), the wired hash-file updater
-//! (`hashes_downloader.py` is a dead duplicate — not ported, per
-//! `docs/SKINS_PORT.md` §0). Merges the 9 CommunityDragon
-//! `hashes.game.txt.{0..8}` shards into one ~207MB `hashes.game.txt`,
-//! re-downloading only when a per-file commits-API check shows upstream
-//! changed.
+//! (`update_hash_files`); `hashes_downloader.py` is a dead duplicate, not
+//! ported. Merges the 9 CommunityDragon `hashes.game.txt.{0..8}` shards into
+//! one ~207MB `hashes.game.txt`, re-downloading only when a per-file
+//! commits-API check shows upstream changed.
 
 #![allow(dead_code)] // consumed by S9 (UI-driven download commands)
 
@@ -51,9 +49,8 @@ struct FileCommitInfo {
     date: String,
 }
 
-/// Outcome of a single shard's commits-API check (ported from
-/// `check_file_commits`'s three return shapes: a commit dict, `None`
-/// (not-found/error), or `{'rate_limited': True}`).
+/// Outcome of a single shard's commits-API check: found, not-found/error,
+/// or rate-limited.
 enum CommitCheck {
     Found(FileCommitInfo),
     NotFound,
@@ -224,9 +221,8 @@ fn combine_hash_shards(shards: Vec<Vec<u8>>) -> Result<Vec<u8>, DownloadError> {
 }
 
 /// Check for updates and download/merge the hash shards into
-/// `tools_dir/hashes.game.txt` if needed (ported from `update_hash_files`).
-/// Returns `Ok(true)` if the file was (re)written, `Ok(false)` if the
-/// existing file is already current.
+/// `tools_dir/hashes.game.txt` if needed. Returns `Ok(true)` if the file was
+/// (re)written, `Ok(false)` if already current.
 pub async fn ensure_hashes(tools_dir: &Path, progress: Progress<'_>) -> Result<bool, DownloadError> {
     let target_path = tools_dir.join(TARGET_FILE);
     let target_exists = target_path.exists();

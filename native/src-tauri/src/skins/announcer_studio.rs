@@ -1,21 +1,18 @@
 //! Announcer Studio — build a custom announcer `.fantome` from user-supplied
 //! audio, entirely in-app with no external encoder.
 //!
-//! The frontend decodes any dropped/recorded audio (mp3/wav/ogg/mic) via the
-//! WebAudio API, resamples to mono 16-bit 44.1kHz PCM, and hands us the raw
-//! samples per slot as base64. We wrap each into a Wwise-PCM `.wem`, swap it
-//! into the bundled vanilla announcer WPK for every game wem-id that slot
-//! covers, flip those sound objects' codec Vorbis->PCM in the bundled events
-//! bank, and write the pack into the announcers mod folder. The existing
-//! `mod_scope`/`announcer_fix` sweep then retargets it for SR/ARAM/NexusBlitz.
+//! Frontend decodes dropped/recorded audio to mono 16-bit 44.1kHz PCM via
+//! WebAudio and sends it per-slot as base64. We wrap each into a Wwise-PCM
+//! `.wem`, swap it into the bundled vanilla WPK for that slot's wem-ids,
+//! flip those objects' codec Vorbis->PCM in the events bank, and write the
+//! pack to the announcers mod folder. `mod_scope`/`announcer_fix` then
+//! retargets it for SR/ARAM/Nexus Blitz.
 //!
-//! CODEC NOTE (learned 2026-07-13): PCM plays for the COMMON announcements but
-//! the game preloads MILESTONE lines (First Blood, Ace, Victory, Penta,
-//! Godlike, Legendary...) at match start and rejects PCM for them — they go
-//! silent. So milestone slots are marked `milestone: true`; the UI warns, and
-//! by default we DON'T patch them (they keep the official announcer instead of
-//! going silent). Full milestone coverage needs real Wwise Vorbis, which is
-//! not bundle-able. See `memory/announcer-studio.md`.
+//! CODEC NOTE: PCM plays for common lines, but the game preloads MILESTONE
+//! lines (First Blood, Ace, Penta, ...) at match start and rejects PCM for
+//! them — silent. Milestone slots default to skipped (UI warns, keeps
+//! official announcer); full coverage needs real Wwise Vorbis (not
+//! bundle-able). See `memory/announcer-studio.md`.
 
 #![allow(dead_code)]
 
@@ -28,16 +25,14 @@ use crate::skins::injection::tools::resources_root;
 use crate::skins::paths;
 use crate::skins::slog::{log_info, log_warn};
 
-/// One assignable announcer slot: a user-facing line that maps to the set of
-/// vanilla game wem-ids that voice it (kept in sync with the game version the
-/// bundled template was extracted from).
+/// One assignable announcer slot: a user-facing line mapped to the vanilla
+/// wem-ids that voice it (kept in sync with the bundled template's game version).
 #[derive(Debug, Clone, Serialize)]
 pub struct Slot {
     pub key: &'static str,
     pub category: &'static str,
     pub label: &'static str,
-    /// Game preloads this line and rejects PCM (goes silent) — UI warns, and
-    /// `build` skips it unless the caller opts in.
+    /// Game preloads this and rejects PCM (goes silent); `build` skips unless caller opts in.
     pub milestone: bool,
     pub wems: &'static [u64],
 }
@@ -229,8 +224,7 @@ fn write_wpk(entries: &[(u64, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
-/// Flip the codec of every Sound object whose source id is in `pcm_ids` from
-/// Vorbis to PCM, in the bundled events bank. Returns the patched bank.
+/// Flip codec Vorbis->PCM for every Sound object whose source id is in `pcm_ids`, in the bundled events bank.
 fn patch_bank_codecs(pcm_ids: &std::collections::HashSet<u64>) -> Result<Vec<u8>, String> {
     let path = studio_res_dir().join("template_events.bnk");
     let mut bnk = std::fs::read(&path).map_err(|e| format!("bundled bank missing: {e}"))?;
@@ -262,9 +256,8 @@ fn patch_bank_codecs(pcm_ids: &std::collections::HashSet<u64>) -> Result<Vec<u8>
     Ok(bnk)
 }
 
-/// Build + install a custom announcer pack. `include_milestones` attempts the
-/// milestone slots too (they'll likely be silent — see module note); default
-/// false leaves them as the official announcer.
+/// Build + install a custom announcer pack. `include_milestones` attempts
+/// milestone slots too (likely silent — see module note); default false leaves them vanilla.
 pub fn build_pack(name: &str, slots: &[SlotAudio], include_milestones: bool) -> BuildResult {
     let fail = |e: String| BuildResult { ok: false, file: None, slots_filled: 0, milestones_skipped: 0, error: Some(e) };
 

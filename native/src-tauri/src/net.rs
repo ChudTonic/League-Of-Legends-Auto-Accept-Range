@@ -1,24 +1,17 @@
-//! Hardened HTTP client for requests that leave the machine (Chud's own
-//! Workers, GitHub). Separate from `lcu::build_lcu_client`'s
-//! loopback-only, cert-relaxed client (P0-B): default TLS cert validation,
-//! an explicit host allowlist enforced on both the initial request AND every
-//! redirect hop, and size-capped reads so a compromised/misconfigured
-//! upstream can't hand back gigabytes into memory.
+//! Hardened HTTP client for requests that leave the machine (Chud's Workers,
+//! GitHub). Unlike `lcu::build_lcu_client`'s loopback-only, cert-relaxed client:
+//! default TLS validation, a host allowlist enforced on the initial request AND
+//! every redirect hop, and size-capped reads against a hostile upstream.
 //!
-//! `chud-skins`/`chud-runes`/GitHub responses are untrusted network input —
-//! this module is the one place that decides "is this URL safe to fetch,"
-//! so every external call site funnels through [`check_external_url`] (via
-//! [`get_json_checked`]/[`get_bytes_checked`]) instead of re-deriving its
-//! own notion of "safe."
+//! `chud-skins`/`chud-runes`/GitHub responses are untrusted input — every
+//! external call site must funnel through [`check_external_url`] (via
+//! [`get_json_checked`]/[`get_bytes_checked`]) rather than re-deriving "safe."
 
 use std::collections::HashSet;
 use std::time::Duration;
 
-/// Built-in external hosts Chud talks to regardless of config (its own
-/// Workers + GitHub's release/raw-content infrastructure). Config-derived
-/// hosts (Worker endpoints, the party relay, `CHUD_RELAY_URL`, and any
-/// operator-added `network.extra_allowed_origins`) are folded in on top —
-/// see [`allowed_origins`].
+/// Built-in external hosts Chud talks to regardless of config (its Workers +
+/// GitHub infra). Config-derived hosts are folded in on top — see [`allowed_origins`].
 const BUILT_IN_HOSTS: &[&str] = &[
     "chud-runes.jivy26.workers.dev",
     "chud-skins.jivy26.workers.dev",
@@ -29,18 +22,15 @@ const BUILT_IN_HOSTS: &[&str] = &[
     "objects.githubusercontent.com",
     "codeload.github.com",
     "release-assets.githubusercontent.com",
-    // Library skin downloads resolve (via the chud-skins Worker's 1:1
-    // catalog) to DIRECT RuneForge R2 artifact URLs — RuneForge hosts the
-    // files, we only host the index + thumbnails.
+    // Library skin downloads resolve to direct RuneForge R2 artifact URLs —
+    // RuneForge hosts the files, we only host the index + thumbnails.
     "runeforge.dev",
     "r2-prod.runeforge.dev",
 ];
 
-/// Build the allowlist of external hosts for this run: the built-ins above,
-/// plus the hosts parsed out of the configured Worker/relay endpoints, the
-/// `CHUD_RELAY_URL` env override, and any operator-added extras. Lowercased
-/// throughout — [`check_external_url`] lowercases the request host too, so
-/// comparisons are always case-insensitive.
+/// Allowlist for this run: built-ins plus hosts from configured Worker/relay
+/// endpoints, `CHUD_RELAY_URL`, and operator extras. Lowercased throughout for
+/// case-insensitive comparison against [`check_external_url`]'s request host.
 pub fn allowed_origins(cfg: &crate::config::Config) -> HashSet<String> {
     let mut set: HashSet<String> = BUILT_IN_HOSTS.iter().map(|h| h.to_string()).collect();
 
@@ -67,16 +57,14 @@ fn host_of(url: &str) -> Option<String> {
     reqwest::Url::parse(url).ok()?.host_str().map(|h| h.to_lowercase())
 }
 
-/// Just the built-in hosts (GitHub + Chud's Workers), no config lookup — for
-/// callers that only ever talk to those fixed hosts and have no `Config`
-/// handle at their call site (`skins::downloads`'s GitHub client).
+/// Built-in hosts only, no config lookup — for callers with no `Config` handle
+/// at their call site (`skins::downloads`'s GitHub client).
 pub fn built_in_allowed_origins() -> HashSet<String> {
     BUILT_IN_HOSTS.iter().map(|h| h.to_string()).collect()
 }
 
-/// Loopback/link-local/private ranges are never a legitimate external host,
-/// even if a config typo somehow put one in the allowlist — belt-and-
-/// suspenders under `host_is_allowed`.
+/// Loopback/link-local/private ranges are never a legitimate external host, even
+/// if a config typo puts one in the allowlist — belt-and-suspenders check.
 fn is_loopback_or_private(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified(),
@@ -84,10 +72,8 @@ fn is_loopback_or_private(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-/// Shared host check used by both the initial request ([`check_external_url`])
-/// and every redirect hop ([`redirect_hop_allowed`]): lowercase, reject
-/// `localhost`/loopback/private IP literals outright, then require allowlist
-/// membership.
+/// Shared check for the initial request and every redirect hop: lowercase,
+/// reject `localhost`/loopback/private IP literals, then require allowlist membership.
 fn host_is_allowed(host: &str, allowed: &HashSet<String>) -> bool {
     let host = host.to_lowercase();
     if host == "localhost" {
@@ -101,9 +87,8 @@ fn host_is_allowed(host: &str, allowed: &HashSet<String>) -> bool {
     allowed.contains(&host)
 }
 
-/// Gate every outbound external request: must parse, must be `https`
-/// (never `http`, never anything else), and the host must be in `allowed`.
-/// Returns the parsed `Url` so callers don't re-parse.
+/// Gate every outbound external request: must parse, must be `https`, host must
+/// be in `allowed`. Returns the parsed `Url` so callers don't re-parse.
 pub fn check_external_url(url: &str, allowed: &HashSet<String>) -> Result<reqwest::Url, String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid URL '{url}': {e}"))?;
     if parsed.scheme() != "https" {
@@ -116,10 +101,8 @@ pub fn check_external_url(url: &str, allowed: &HashSet<String>) -> Result<reqwes
     Ok(parsed)
 }
 
-/// Pure per-hop redirect check, factored out of the closure in
-/// [`build_external_client`] so it's unit-testable without spinning up an
-/// HTTP server: a redirect target must still be `https` and still resolve to
-/// an allowed host.
+/// Per-hop redirect check, factored out of [`build_external_client`]'s closure so
+/// it's unit-testable without an HTTP server: target must be `https` and allowed.
 fn redirect_hop_allowed(url: &reqwest::Url, allowed: &HashSet<String>) -> bool {
     url.scheme() == "https" && url.host_str().map(|h| host_is_allowed(h, allowed)).unwrap_or(false)
 }
@@ -129,13 +112,11 @@ fn user_agent() -> String {
     format!("Chud/{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Build a client for requests that leave the machine: DEFAULT cert
-/// validation (no `danger_accept_invalid_certs`), HTTPS-only, and a redirect
-/// policy that re-validates every hop against `allowed` (max 5 hops; any
-/// non-https or unapproved-host hop aborts the request instead of following
-/// it). `allowed` is consumed into the redirect closure — callers that need
-/// it again for [`get_json_checked`]/[`get_bytes_checked`] should clone
-/// before moving it in.
+/// Build a client for requests leaving the machine: default cert validation,
+/// HTTPS-only, redirect policy re-validates every hop against `allowed` (max 5
+/// hops, any non-https/unapproved hop aborts). `allowed` is consumed into the
+/// redirect closure — clone before moving in if needed again for
+/// [`get_json_checked`]/[`get_bytes_checked`].
 pub fn build_external_client(timeout_secs: f64, allowed: HashSet<String>) -> reqwest::Client {
     reqwest::Client::builder()
         .https_only(true)
@@ -156,9 +137,8 @@ pub fn build_external_client(timeout_secs: f64, allowed: HashSet<String>) -> req
         .expect("failed to build reqwest client")
 }
 
-/// Checked GET returning parsed JSON: validates the URL, requires a 2xx
-/// status, and enforces `max_bytes` (via `Content-Length` when present, and
-/// unconditionally while streaming, in case the header is missing or lies).
+/// Checked GET returning parsed JSON: validates the URL, requires 2xx, enforces
+/// `max_bytes` (via `Content-Length` when present, and while streaming regardless).
 pub async fn get_json_checked(
     client: &reqwest::Client,
     url: &str,
@@ -239,11 +219,8 @@ mod tests {
         assert!(!redirect_hop_allowed(&downgraded, &allowed()));
     }
 
-    /// Online: hits badssl.com's self-signed endpoint and asserts the
-    /// hardened client (default cert validation) refuses it — proving this
-    /// client, unlike `lcu::build_lcu_client`, does NOT accept invalid certs.
-    /// `#[ignore]`d since it needs network access; run explicitly with
-    /// `cargo test -- --ignored`.
+    /// Online: proves the hardened client rejects a self-signed cert, unlike
+    /// `lcu::build_lcu_client`. `#[ignore]`d; run with `cargo test -- --ignored`.
     #[tokio::test]
     #[ignore]
     async fn invalid_external_cert_rejected() {

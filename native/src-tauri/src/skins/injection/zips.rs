@@ -1,17 +1,14 @@
 //! Zip resolution + safe extraction + junction-or-extract cache — ported
-//! from `injection\mods\zip_resolver.py` (`ZipResolver`), `utils\core\safe_extract.py`,
-//! and `utils\core\junction.py`.
+//! from `injection\mods\zip_resolver.py` (`ZipResolver`), `safe_extract.py`,
+//! and `junction.py`.
 //!
 //! `resolve_zip`'s special-case forms (Elementalist Lux, Sahn Uzal
 //! Mordekaiser, Spirit Blossom Morgana, Radiant Sett, KDA Seraphine) were 5
-//! near-duplicate private methods in the Python original, each hardcoding
-//! its own fake-ID -> display-name -> file-stem table. They're collapsed
-//! here onto one generic dispatch through `features::special::FORMS` (the
-//! single source of truth `docs/SKINS_PORT.md` calls for) — Viego forms and
-//! the Kai'Sa/Ahri HOL chromas already fell through to the generic
-//! champion/skin/chroma directory scan in Python (they have no literal-path
-//! branch there either), which this port preserves via `FormSkin::zip_rel`
-//! being empty for those two entries.
+//! near-duplicate private methods in Python, each hardcoding its own
+//! fake-ID -> display-name -> file-stem table. Collapsed here onto one
+//! generic dispatch through `features::special::FORMS` — Viego forms and
+//! the Kai'Sa/Ahri HOL chromas already fell through to the generic scan in
+//! Python too, preserved here via `FormSkin::zip_rel` being empty for those two.
 
 #![allow(dead_code)] // consumed by S3+ (injector wiring)
 
@@ -241,10 +238,9 @@ fn resolve_chroma_by_id(zips_dir: &Path, champion_id: i64, chroma_id: i64) -> Op
 
 /// Reject a zip member path that would escape the destination directory,
 /// returning its safe relative form. Component-aware (checks
-/// `Component::ParentDir`/absolute/root lexically, then `Path::starts_with`
-/// on the joined result) rather than the Python original's `str(resolved).startswith(str(base))`
-/// string-prefix check, which a sibling directory sharing `base` as a
-/// prefix (e.g. `mods-evil` vs `mods`) would incorrectly pass.
+/// `Component::ParentDir`/absolute/root, then `Path::starts_with` on the
+/// joined result) rather than Python's string-prefix check, which a sibling
+/// directory sharing `base` as a prefix (e.g. `mods-evil` vs `mods`) would incorrectly pass.
 fn safe_member_relpath(name: &str) -> Option<PathBuf> {
     let cleaned = name.replace('\\', "/");
     let candidate = Path::new(&cleaned);
@@ -265,10 +261,8 @@ fn safe_member_relpath(name: &str) -> Option<PathBuf> {
 }
 
 /// Safely extract every entry of a ZIP file to `dest_dir`, validating each
-/// member's path before extracting anything (ported from
-/// `safe_extract.py::safe_extractall`). Returns the number of files
-/// extracted, or `Err(ExtractError::UnsafePath)` on the first zip-slip
-/// attempt found (matching Python's `UnsafePathError`).
+/// member's path before extracting anything. Returns the number of files
+/// extracted, or `Err(ExtractError::UnsafePath)` on the first zip-slip attempt found.
 pub fn safe_extractall(zip_path: &Path, dest_dir: &Path) -> Result<usize, ExtractError> {
     std::fs::create_dir_all(dest_dir).map_err(ExtractError::Io)?;
 
@@ -358,9 +352,8 @@ pub fn safe_remove_entry(path: &Path) {
 }
 
 /// mtime-cached extraction of `zip_path` into `cache_dir`, keyed by
-/// `folder_name` (ported from `junction.py::_get_or_extract_to_cache`). The
-/// cache is invalidated when the source file's mtime changes (e.g. the user
-/// replaces the archive with an updated version).
+/// `folder_name`. Cache is invalidated when the source file's mtime changes
+/// (e.g. the user replaces the archive with an updated version).
 fn get_or_extract_to_cache(zip_path: &Path, folder_name: &str, cache_dir: &Path) -> Result<PathBuf, ExtractError> {
     std::fs::create_dir_all(cache_dir).map_err(ExtractError::Io)?;
     let cached = cache_dir.join(folder_name);
@@ -471,9 +464,8 @@ mod tests {
         std::fs::write(&file, b"fake").unwrap();
 
         // fake_id 99991 -> "Lux/Forms/Lux Elementalist Air.zip" per features::special::FORMS.
-        // Note: the zip_arg here must NOT start with "skin_"/"chroma_" — those
-        // prefixes route straight to the generic directory scan (matching
-        // Python's resolve_zip), bypassing the special-forms dispatch.
+        // zip_arg must NOT start with "skin_"/"chroma_" — those prefixes route
+        // straight to the generic directory scan, bypassing special-forms dispatch.
         let found = resolve_zip(&dir, "Lux", Some(99991), Some("Lux"), None, Some(99));
         assert_eq!(found, Some(file));
 

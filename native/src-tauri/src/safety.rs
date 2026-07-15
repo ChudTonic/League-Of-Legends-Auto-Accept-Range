@@ -1,6 +1,5 @@
-//! Anti-cheat guard. `isRanked` is the authoritative signal; queue-id is a
-//! fallback. Used by M2/M3 injection tools; lives here so M1 already has it.
-#![allow(dead_code)] // wired in by the injection tools in M2/M3
+//! Anti-cheat guard. `isRanked` is the authoritative signal; queue-id is a fallback.
+#![allow(dead_code)] // wired in by later injection tools
 
 /// Ranked Solo/Duo (420) and Ranked Flex SR (440). 470 (Ranked Flex TT) was
 /// removed with Twisted Treeline.
@@ -19,9 +18,8 @@ pub fn queue_is_ranked(session: &serde_json::Value) -> Option<bool> {
     None
 }
 
-/// Gameflow phases that mean a match is actually live (champ pick onward). Only
-/// during these do we apply the ranked kill-switch — outside a game there is
-/// nothing to protect, so the injection tools must be free to run.
+/// Gameflow phases where a match is actually live (champ pick onward) — only
+/// then does the ranked kill-switch apply; outside a game there's nothing to protect.
 fn game_is_live(session: &serde_json::Value) -> bool {
     matches!(
         session.get("phase").and_then(|v| v.as_str()),
@@ -29,11 +27,8 @@ fn game_is_live(session: &serde_json::Value) -> bool {
     )
 }
 
-/// Whether the injection tools should block right now, given the full gameflow
-/// session. Fails **safe**: if a game is live but its ranked state can't be
-/// determined, block rather than risk running in ranked. Outside a live game,
-/// never block (so Auto-Range/Camera work normally in practice tool, customs in
-/// progress aside). `is_ranked` is the authoritative signal when present.
+/// Whether injection tools should block right now. Fails safe: if live but ranked
+/// state is unknown, block. Never blocks outside a live game.
 pub fn should_block(session: &serde_json::Value) -> bool {
     if !game_is_live(session) {
         return false;

@@ -68,9 +68,8 @@ pub fn find_auth() -> Option<Auth> {
     None
 }
 
-// Cached auth so per-image asset requests don't rescan the process list each
-// time. The lockfile port/password rotate per client launch, so callers
-// invalidate on a failed request to force a fresh discovery.
+// Cached so per-image requests don't rescan the process list each time. Port/
+// password rotate per client launch, so callers invalidate on a failed request.
 static AUTH_CACHE: std::sync::Mutex<Option<Auth>> = std::sync::Mutex::new(None);
 
 pub fn cached_auth() -> Option<Auth> {
@@ -87,14 +86,10 @@ pub fn invalidate_auth() {
 }
 
 /// Build a client for talking to the LCU. MUST ONLY be used against
-/// `auth.base_url` (`https://127.0.0.1:<port>`, from the lockfile) — it
-/// relaxes cert validation for the LCU's self-signed loopback cert, which
-/// would be a hard TLS-bypass footgun against any real internet host.
-/// External requests (Chud's Workers, GitHub) belong on
-/// `net::build_external_client` instead, which validates certs normally.
-/// Redirects are disabled outright: the LCU never redirects, so a redirect
-/// response can only be a bug or an attempt to walk this loopback-trusting
-/// client off of loopback.
+/// `auth.base_url` (loopback, from the lockfile) — it relaxes cert validation
+/// for the LCU's self-signed cert, a TLS-bypass footgun against any real host.
+/// External requests belong on `net::build_external_client` instead. Redirects
+/// are disabled: the LCU never redirects, so one is a bug or an escape attempt.
 pub fn build_lcu_client(timeout_secs: f64) -> reqwest::Client {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true) // LCU self-signed cert on 127.0.0.1
@@ -104,9 +99,8 @@ pub fn build_lcu_client(timeout_secs: f64) -> reqwest::Client {
         .expect("failed to build reqwest client")
 }
 
-/// Shared client for LCU asset proxying: one connection pool / TLS setup
-/// reused across all `lcu://` scheme requests instead of a fresh client per
-/// image (the Profile view can fetch 100+ icons in a burst).
+/// Shared client for LCU asset proxying: one connection pool reused across all
+/// `lcu://` requests instead of a fresh client per image.
 pub fn asset_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| build_lcu_client(5.0))
@@ -147,11 +141,8 @@ pub async fn get_json(client: &reqwest::Client, auth: &Auth, path: &str) -> Opti
     resp.json().await.ok()
 }
 
-/// Authed write to the LCU with an optional JSON body — the POST/PUT/DELETE/
-/// PATCH side that `get_json` doesn't cover (rune pages, item sets, champ-
-/// select selection). Returns the parsed response body on 2xx (or `Null` for
-/// an empty 2xx body, which many LCU writes return), and `None` on a transport
-/// failure or non-2xx status.
+/// Authed write to the LCU with an optional JSON body (POST/PUT/DELETE/PATCH).
+/// Returns parsed body on 2xx (`Null` for an empty 2xx body), `None` otherwise.
 pub async fn request_json(
     client: &reqwest::Client,
     auth: &Auth,
@@ -197,7 +188,7 @@ pub async fn get_bytes(client: &reqwest::Client, auth: &Auth, path: &str) -> Opt
     Some((bytes, content_type))
 }
 
-#[allow(dead_code)] // used by the ranked kill-switch in M2/M3
+#[allow(dead_code)] // used by the ranked kill-switch
 pub async fn gameflow_session(client: &reqwest::Client, auth: &Auth) -> Option<serde_json::Value> {
     let resp = client
         .get(format!("{}/lol-gameflow/v1/session", auth.base_url))

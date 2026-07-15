@@ -1,8 +1,6 @@
 //! Skins subsystem: LCU skin features, injection pipeline, Pengu Loader
-//! bridge, and party mode — see `docs/SKINS_PORT.md` for provenance and the
-//! full architecture. S1 ships only the foundation (paths/logging/config/
-//! state/the forms table) so later milestones have somewhere to hang real
-//! logic.
+//! bridge, and party mode — see `docs/SKINS_PORT.md` for architecture/provenance.
+//! S1 ships only the foundation (paths/logging/config/state); later milestones build on it.
 
 #![allow(dead_code)] // consumed by S2+
 
@@ -29,15 +27,12 @@ pub mod trigger;
 use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
-/// All mutable skins state, coarse-Mutex-guarded (see `docs/SKINS_PORT.md`
-/// "Threading model"): one writer at a time beats the Python original's
-/// 5-OS-thread GIL races. Split into finer-grained locks later only if
-/// contention shows.
+/// All mutable skins state, one coarse Mutex (see `docs/SKINS_PORT.md`
+/// "Threading model") — simpler than the Python original's 5-thread GIL races. Split later if contention shows.
 pub struct SkinsState {
     pub shared: Mutex<state::SkinsShared>,
-    /// Bumped by the phase actor (S2) so a stale phase generation's
-    /// in-flight loops exit instead of racing the current one — same
-    /// pattern `lib.rs`'s `AppState` already uses for its tool loops.
+    /// Bumped by the phase actor (S2) so stale in-flight loops exit instead of
+    /// racing the current one — same pattern as `lib.rs`'s `AppState`.
     pub phase_gen: AtomicU64,
     /// Bumped on each loadout-ticker (re)arm (S5) for the same reason.
     pub ticker_gen: AtomicU64,
@@ -57,19 +52,16 @@ impl Default for SkinsState {
     }
 }
 
-/// Bring up the skins data-dir tree and file logger. Call once at app
-/// start; non-fatal on failure — the caller `eprintln`'s and continues (the
-/// skins subsystem simply stays unavailable this session).
+/// Bring up the skins data-dir tree and file logger. Call once at app start;
+/// non-fatal on failure — caller `eprintln`'s and continues, subsystem just stays unavailable.
 pub fn init() -> std::io::Result<()> {
     paths::ensure_tree()?;
     slog::init(&paths::logs_dir());
     slog::cleanup_old_logs(&paths::logs_dir());
-    // Seed the cslol tools into user-data and run them from there, so an
-    // installer update never has to overwrite a locked in-use mod-tools.exe.
+    // Seed cslol tools into user-data so an installer update never overwrites a locked in-use mod-tools.exe.
     injection::tools::ensure_cslol_tools();
     // Sync bundled Pengu plugins into the runtime folder every launch, so a
-    // plugin added in an update reaches the client even without re-activating
-    // Pengu (fixes new plugins never appearing after an auto-update).
+    // plugin added in an update reaches the client without re-activating Pengu.
     pengu::ensure_synced();
     Ok(())
 }

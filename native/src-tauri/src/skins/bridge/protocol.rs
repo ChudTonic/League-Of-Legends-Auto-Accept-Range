@@ -1,18 +1,13 @@
 //! Bridge wire protocol — ported from `pengu\communication\message_handler.py`'s
-//! routing table (35 inbound message types) and `pengu\communication\
-//! broadcaster.py`'s 9 outbound state broadcasts (S4).
+//! routing table (35 inbound types) and `broadcaster.py`'s 9 outbound broadcasts.
 //!
-//! CRITICAL two-stage inbound decode (`docs/SKINS_PORT.md` §3): the Pengu
-//! plugin sends most messages `{"type": "...", ...}`-tagged, but the legacy
-//! skin-hover message has NO `type` field at all — just `{"skin": "..."}`.
-//! A strict serde-tagged enum would reject that shape outright, so decoding
-//! is a first pass over `serde_json::Value` (does `"type"` exist? does
-//! `"skin"` exist?) and only THEN a typed `serde_json::from_value` for the
-//! tagged case. Message type strings are brand-neutral and kept VERBATIM —
-//! the rebranded JS plugins still speak them unchanged.
+//! Two-stage inbound decode: most messages are `{"type": "...", ...}`-tagged,
+//! but the legacy skin-hover message has NO `type` field, just `{"skin": "..."}`
+//! — a strict tagged enum would reject that shape, so decoding first checks
+//! raw `serde_json::Value` for `"type"`/`"skin"`, then types the tagged case.
+//! Message type strings are brand-neutral and kept verbatim for the JS plugins.
 //!
-//! All timestamps are `i64` milliseconds since epoch (`Date.now()` on the JS
-//! side; `int(time.time() * 1000)` in the Python original).
+//! Timestamps are `i64` ms since epoch (`Date.now()` on JS; `int(time.time() * 1000)` in Python).
 
 #![allow(dead_code)]
 
@@ -23,8 +18,7 @@ use serde_json::Value;
 
 use crate::skins::slog::log_warn;
 
-/// `Date.now()`-compatible milliseconds-since-epoch (ported from every
-/// `int(time.time() * 1000)` call site in `broadcaster.py`/`message_handler.py`).
+/// `Date.now()`-compatible milliseconds-since-epoch.
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
@@ -39,14 +33,12 @@ pub fn now_ms() -> i64 {
 pub enum Inbound {
     /// `{"type": "...", ...}` — routes through `InboundMessage`.
     Message(InboundMessage),
-    /// The legacy type-less `{"skin": "SkinName"}` hover message (no `type`
-    /// key at all — `payload.get("skin")` in the Python fallback branch).
+    /// The legacy type-less `{"skin": "SkinName"}` hover message.
     SkinHover(String),
 }
 
 /// Decode one WebSocket text frame. Returns `None` on invalid JSON, an
-/// unrecognized `type`, or a shape that matches neither stage (mirrors the
-/// Python original silently dropping/logging unroutable payloads).
+/// unrecognized `type`, or a shape matching neither stage.
 pub fn decode(text: &str) -> Option<Inbound> {
     let value: Value = serde_json::from_str(text).ok()?;
 
@@ -68,12 +60,11 @@ pub fn decode(text: &str) -> Option<Inbound> {
     None
 }
 
-/// The 35 inbound message types (`message_handler.py`'s `elif payload_type
-/// == "..."` chain), tagged on the wire by `"type"` — variant names are
-/// `PascalCase` of the kebab-case wire string (e.g. `ChromaSelection` <->
-/// `"chroma-selection"`) via `rename_all = "kebab-case"`; per-variant
-/// `rename_all = "camelCase"` maps snake_case Rust fields to the JS payload's
-/// camelCase keys (exceptions get an explicit `#[serde(rename = "...")]`).
+/// The 35 inbound message types, tagged on the wire by `"type"`: variant
+/// names are `PascalCase` of the kebab-case wire string (e.g. `ChromaSelection`
+/// <-> `"chroma-selection"`) via `rename_all = "kebab-case"`; per-variant
+/// `rename_all = "camelCase"` maps snake_case fields to camelCase JS keys
+/// (exceptions get an explicit `#[serde(rename = "...")]`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum InboundMessage {
@@ -242,8 +233,7 @@ pub enum InboundMessage {
         token: Option<String>,
     },
     PartyRemovePeer {
-        // Wire field is literally snake_case in the Python original
-        // (`payload.get("summoner_id")`) — preserved verbatim, NOT camelCase.
+        // Wire field is snake_case, not camelCase — preserved verbatim.
         #[serde(default, rename = "summoner_id")]
         summoner_id: Option<Value>,
     },
@@ -251,11 +241,9 @@ pub enum InboundMessage {
 }
 
 // ---------------------------------------------------------------------
-// Outbound — the 9 named state broadcasts (`Broadcaster` in Python) that
-// `bridge::broadcast::BridgeHandle` exposes as the S5/S6 seam, plus the
-// generic raw-JSON primitive (`BridgeHandle::broadcast_json`) request/response
-// payloads route through — together the "10 outbound" surfaces this bridge
-// exposes.
+// Outbound — the 9 named state broadcasts `bridge::broadcast::BridgeHandle`
+// exposes, plus the generic raw-JSON primitive (`broadcast_json`) request/
+// response payloads route through.
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,11 +277,8 @@ pub struct ChromaStateMsg {
 
 impl ChromaStateMsg {
     /// `chroma_color`/`chroma_colors`/`current_skin_id` are always `None` —
-    /// the ChromaPanelManager the Python original could optionally source
-    /// them from (`ui/chroma/panel.py`) is Qt-era UI bookkeeping that was
-    /// never ported (see `features::chroma`'s module doc); this is the
-    /// `else` fallback branch of `Broadcaster.broadcast_chroma_state`, which
-    /// is the only branch reachable here.
+    /// the Qt-era `ChromaPanelManager` that could source them was never
+    /// ported (see `features::chroma`); this is the only reachable branch.
     pub fn new(selected_chroma_id: Option<i64>) -> Self {
         Self {
             kind: "chroma-state",
@@ -420,16 +405,14 @@ pub struct PartyStateMsg {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub enabled: bool,
-    // Wire field is literally `my_token` (snake_case) in the Python
-    // original's payload dict — preserved verbatim.
+    // Wire field is snake_case `my_token`, preserved verbatim.
     pub my_token: Option<String>,
     pub peers: Vec<Value>,
     pub timestamp: i64,
 }
 
 impl PartyStateMsg {
-    /// Party mode is S6 — always the disabled/empty shape here (see
-    /// `bridge::handlers`'s party stubs).
+    /// Always the disabled/empty shape here (see `bridge::handlers`'s party stubs).
     pub fn disabled() -> Self {
         Self { kind: "party-state", enabled: false, my_token: None, peers: Vec::new(), timestamp: now_ms() }
     }

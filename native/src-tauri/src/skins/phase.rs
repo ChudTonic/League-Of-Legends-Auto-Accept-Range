@@ -1,26 +1,19 @@
 //! Phase engine actor: the single writer for the skins subsystem's phase
 //! state (S2). Ported from `threads/core/phase_thread.py` +
-//! `threads/websocket/websocket_event_handler.py` + `threads/handlers/
-//! phase_handler.py` + `champion_lock_handler.py` + `game_mode_detector.py` +
-//! `lcu_monitor_thread.py`.
+//! `websocket_event_handler.py` + `phase_handler.py` +
+//! `champion_lock_handler.py` + `game_mode_detector.py` + `lcu_monitor_thread.py`.
 //!
-//! The Python original had THREE threads racing to write `state.phase`
-//! (`PhaseThread`'s HTTP poll, `WSEventThread`'s websocket handler, and
-//! `LCUMonitorThread`'s reconnect bookkeeping) with documented races (see
-//! `docs/SKINS_PORT.md` "Threading model" and `champ_select_reset.py`'s
-//! docstring on the "works once, then stops" bug the dual writers caused).
-//! Chud collapses all three into one tokio task that owns `SkinsShared.phase`
-//! exclusively: the LCU websocket fan-out (`lcu_ws.rs`) and a slow poll
-//! fallback both feed observations into this actor's `mpsc` channel instead
-//! of writing state themselves, so there is exactly one phase-change
-//! decision point.
+//! Python had THREE threads racing to write `state.phase` (HTTP poll,
+//! websocket handler, reconnect bookkeeping), causing a documented "works
+//! once, then stops" bug. Chud collapses all three into one tokio task that
+//! owns `SkinsShared.phase` exclusively: the LCU websocket fan-out
+//! (`lcu_ws.rs`) and a slow poll fallback both feed observations into this
+//! actor's `mpsc` channel instead of writing state themselves, so there's
+//! exactly one phase-change decision point.
 //!
-//! `PhaseThread`'s null-phase-streak debounce and `LCUMonitorThread`'s
-//! LCU-disconnect debounce were two different constants (both `3`) guarding
-//! two conceptually different things in Python, but they fired off the same
-//! underlying signal (the LCU stopped answering). Here they're unified into
-//! one `null_streak` counter: preserves both debounce semantics (3 polls)
-//! while actually being the single-writer fix the poll/WS race needed.
+//! Python's null-phase-streak debounce and LCU-disconnect debounce were two
+//! different constants (both `3`) for the same underlying signal (LCU
+//! stopped answering); here they're unified into one `null_streak` counter.
 
 #![allow(dead_code)]
 
@@ -40,8 +33,7 @@ use crate::skins::SkinsState;
 use crate::{AppState, LockExt};
 
 /// Consecutive null-phase (or LCU-unreachable) polls before treating it as a
-/// real disconnect — `PhaseThread._null_phase_streak` /
-/// `LCUMonitorThread.LCU_DISCONNECT_DEBOUNCE_POLLS`, both `3` in Python.
+/// real disconnect (`3` in Python, both constants).
 const DISCONNECT_DEBOUNCE_POLLS: u32 = 3;
 /// Poll-fallback cadence — the WS fan-out covers the fast path; this only
 /// fills gaps (missed WS events, cold start before the WS connects).
@@ -119,9 +111,8 @@ pub enum PhaseEvent {
     LcuReconnected,
 }
 
-/// Handle returned by `spawn`: `input_tx` feeds observations in (from
-/// `lcu_ws.rs`'s fan-out and this module's own poll fallback caller sites),
-/// `events` is subscribed to by later milestones.
+/// Handle returned by `spawn`: `input_tx` feeds observations in, `events` is
+/// subscribed to by later milestones.
 pub struct PhaseHandle {
     pub input_tx: mpsc::Sender<PhaseInput>,
     pub events: broadcast::Sender<PhaseEvent>,
@@ -194,19 +185,16 @@ async fn run(
                     &mut last_phase, &mut null_streak, &mut disconnected,
                     &mut last_locked_champion_id, &mut scraper_cache,
                 ).await;
-                // `_maybe_recover_locked_champ_select_state`: retry the
-                // late-lock bootstrap every poll tick while ChampSelect is
-                // active and nothing's locked yet — covers a lock that
-                // happened between actor start and the first WS session
-                // delta reaching us. A no-op once `own_champion_locked`.
+                // Retry the late-lock bootstrap every poll tick while ChampSelect
+                // is active and nothing's locked yet — covers a lock that happened
+                // between actor start and the first WS session delta. No-op once
+                // `own_champion_locked`.
                 bootstrap_late_locked_champion(&skins, &client, &events, &mut last_locked_champion_id, &mut scraper_cache).await;
                 // Arm the loadout ticker DURING the champ-select FINALIZATION
-                // countdown (ported from Rose's primary injection path). This
-                // preps injection — and arms the game monitor — before League
-                // even launches, which is far more reliable than the GameStart
-                // fallback that races the game's asset load. `maybe_start_timer`
-                // self-gates on the session's `timer.phase == FINALIZATION` and
-                // won't double-arm, so calling it every poll is safe.
+                // countdown — preps injection (and arms the game monitor) before
+                // League even launches, far more reliable than the GameStart
+                // fallback, which races the game's asset load. Self-gates on
+                // `timer.phase == FINALIZATION`, so calling every poll is safe.
                 maybe_arm_loadout_ticker(&app, &skins, &client).await;
             }
         }
@@ -292,8 +280,7 @@ async fn process_phase_observation(
         if *null_streak == DISCONNECT_DEBOUNCE_POLLS && last_phase.is_some() {
             log_warn!("[phase] LCU unreachable for {DISCONNECT_DEBOUNCE_POLLS} polls - resetting skins state");
             // The client may have restarted with a fresh lockfile port — drop
-            // the SHARED auth cache so the next poll re-reads the lockfile and
-            // reconnects, rather than looping forever on the stale cached auth.
+            // the shared auth cache so the next poll re-reads it and reconnects.
             lcu::invalidate_auth();
             {
                 let mut shared = skins.shared.lock_safe();
@@ -303,10 +290,8 @@ async fn process_phase_observation(
             *disconnected = true;
             let _ = events.send(PhaseEvent::LcuDisconnected);
         } else if *null_streak >= DISCONNECT_DEBOUNCE_POLLS {
-            // Already reset above on the first crossing; nothing left to clear
-            // for swiftplay-mode state beyond that reset (owned by swiftplay.rs
-            // in S5 — the fuller `cleanup_swiftplay_exit` orchestration is
-            // deferred there, this actor only owns `SkinsShared` fields).
+            // Already reset above on the first crossing; this actor only owns
+            // `SkinsShared` fields, the fuller swiftplay cleanup lives in swiftplay.rs.
             let mut shared = skins.shared.lock_safe();
             if !shared.is_swiftplay_mode && !shared.swiftplay_extracted_mods.is_empty() {
                 shared.swiftplay_extracted_mods.clear();
@@ -338,11 +323,9 @@ async fn process_phase_observation(
             log_info!("[phase] Entering FINALIZATION");
             let _ = events.send(PhaseEvent::Finalization);
 
-            // S5: start the loadout ticker. `ticker::TimerManager::maybe_start_timer`
-            // needs the raw champ-select session JSON (its `timer` sub-object
-            // isn't modeled on `lcu_ext::SessionData` — out of this
-            // milestone's file scope to add), so it's fetched here rather
-            // than inside `ticker.rs`.
+            // Start the loadout ticker. `maybe_start_timer` needs the raw
+            // champ-select session JSON (its `timer` sub-object isn't
+            // modeled on `SessionData`), so it's fetched here.
             if let Some(auth) = lcu::cached_auth() {
                 if let Some(session) =
                     lcu_ext::shared_cache().get(client, &auth, "/lol-champ-select/v1/session", lcu_ext::DEFAULT_CACHE_TTL).await
@@ -353,10 +336,9 @@ async fn process_phase_observation(
         }
         Phase::InProgress => {
             log_info!("[phase] InProgress");
-            // Last resort: if both the loadout ticker (FINALIZATION) and
-            // GameStart were missed (a mode that jumps straight here), still
-            // attempt injection. The `last_hover_written` guard inside makes
-            // this a no-op when we already fired for this game.
+            // Last resort: if the FINALIZATION ticker and GameStart were both
+            // missed, still attempt injection. `last_hover_written` makes this
+            // a no-op if we already fired for this game.
             let is_swiftplay = { skins.shared.lock_safe().is_swiftplay_mode };
             if !is_swiftplay {
                 crate::skins::ticker::inject_for_game(app, skins, client).await;
@@ -372,12 +354,12 @@ async fn process_phase_observation(
                 phase_exit_reset(skins);
                 crate::skins::swiftplay::on_game_start(app.clone(), Arc::clone(skins)).await;
             } else {
-                // Normal / Practice Tool / any non-swiftplay mode: the loadout
-                // ticker only arms on the champ-select FINALIZATION timer, which
-                // Practice Tool (and some other modes) never reach. Inject as the
-                // game launches — the game monitor suspends League on spawn so
-                // the overlay builds before champion assets load. Inject BEFORE
-                // the exit reset so the locked selection is still readable.
+                // Non-swiftplay: the loadout ticker only arms on the
+                // FINALIZATION timer, which Practice Tool (and others) never
+                // reach. Inject as the game launches instead — the monitor
+                // suspends League on spawn so the overlay builds before
+                // assets load. Inject BEFORE the exit reset so the locked
+                // selection is still readable.
                 crate::skins::ticker::inject_for_game(app, skins, client).await;
                 phase_exit_reset(skins);
             }
@@ -414,18 +396,14 @@ fn phase_exit_reset(skins: &Arc<SkinsState>) {
 
 /// ChampSelect entry: the idempotent per-game reset (guarded by
 /// `champ_select_reset_done`), game-mode detection, and the owned-skins
-/// reload — consolidates `champ_select_reset.py::perform_champ_select_reset`
-/// + `game_mode_detector.py::detect_game_mode`, called from exactly one
-/// place regardless of which source (WS or poll) observed the transition.
+/// reload — called from exactly one place regardless of which source (WS or
+/// poll) observed the transition.
 ///
-/// S5 fix (`docs/SKINS_PORT.md`'s open reconciliation item "Swiftplay skips
-/// champ-select reset not honored"): Swiftplay locks the player's champion in
-/// the LOBBY, before ChampSelect even starts. Running the normal per-game
-/// reset here (which clears `locked_champ_id`/`own_champion_locked`/etc.)
-/// would wipe that lock every time. Ported from
-/// `websocket_event_handler.py`'s `ph == "ChampSelect"` branch, which
-/// detects game mode FIRST specifically so it can decide whether to run the
-/// normal reset or the Swiftplay branch instead.
+/// Swiftplay locks the player's champion in the LOBBY, before ChampSelect
+/// even starts, so the normal per-game reset (which clears
+/// `locked_champ_id`/`own_champion_locked`) would wipe that lock every time.
+/// Game mode is detected FIRST specifically to decide normal reset vs. the
+/// Swiftplay branch.
 async fn champ_select_entry(
     app: &AppHandle,
     skins: &Arc<SkinsState>,
@@ -434,23 +412,18 @@ async fn champ_select_entry(
     last_locked_champion_id: &mut Option<i64>,
     scraper_cache: &mut ChampionSkinCache,
 ) {
-    // Heal a leaked injection lock/overlay from a previous game on EVERY champ
-    // select entry — Swiftplay included (this runs BEFORE the Swiftplay branch
-    // returns). A `runoverlay` that never self-exited otherwise holds the
-    // injection mutex + `injection_in_progress` flag forever, blacking out
-    // skins for the rest of the session, and leaks the `mod-tools.exe` that
-    // locks the installer. OS-level (can't deadlock on the mutex it's clearing)
-    // and on a blocking thread (its process enumeration must not stall the
-    // single-writer phase actor). Champ-select entry is de-duped upstream, so
-    // this fires once per game.
+    // Heal a leaked injection lock/overlay on EVERY champ select entry
+    // (Swiftplay included, runs BEFORE that branch returns) — a `runoverlay`
+    // that never self-exited otherwise holds the injection mutex forever,
+    // blacking out skins for the rest of the session. OS-level (can't
+    // deadlock on the mutex it's clearing) and on a blocking thread (must
+    // not stall the single-writer phase actor).
     if let Some(injection) = app.state::<Arc<AppState>>().skins_injection.lock_safe().clone() {
         tauri::async_runtime::spawn_blocking(move || injection.reset_stuck_injection());
     }
 
-    // Auto-fix any custom mods imported (hand-dropped) since the last sweep —
-    // scoping/retargeting them NOW, minutes before the loadout injection needs
-    // them, keeps overlay builds fast and off the live champ-select path.
-    // No-op (one metadata stat per mod) when nothing changed.
+    // Auto-fix custom mods imported since the last sweep, minutes before the
+    // loadout injection needs them, keeping overlay builds off the live path.
     {
         let sweep_app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -509,37 +482,26 @@ async fn champ_select_entry(
 
     let _ = events.send(PhaseEvent::ChampSelectEntered);
 
-    // Late-lock bootstrap: we just reset for a fresh ChampSelect, but if the
-    // app started (or the LCU reconnected) after the local player already
-    // locked, the reset above cleared `locked_champ_id`/`own_champion_locked`
-    // and nothing will re-set them — the WS fan-out only delivers session
-    // *deltas*, and there won't be one for a lock that already happened.
-    // Proactively check now instead of waiting for the next poll tick.
+    // Late-lock bootstrap: if the app started (or LCU reconnected) after the
+    // local player already locked, the reset above cleared the lock and the
+    // WS fan-out (deltas only) won't re-set it. Check proactively now.
     bootstrap_late_locked_champion(skins, client, events, last_locked_champion_id, scraper_cache).await;
 }
 
-/// `_needs_late_lock_bootstrap`/`_maybe_recover_locked_champ_select_state`'s
-/// guard, extracted as a pure predicate so it's unit-testable without an LCU
-/// connection: only worth fetching the session if we're actually sitting in
-/// ChampSelect and haven't already recorded a lock.
+/// Pure predicate, unit-testable without an LCU connection: only worth
+/// fetching the session if we're in ChampSelect and haven't recorded a lock.
 fn should_attempt_late_lock_bootstrap(phase: Option<&str>, own_champion_locked: bool) -> bool {
     phase == Some("ChampSelect") && !own_champion_locked
 }
 
-/// Ported from `lcu_monitor_thread.py::_bootstrap_late_locked_champion` /
-/// `_maybe_recover_locked_champ_select_state`: if the app starts (or the LCU
-/// reconnects) while champ select is already underway and the local player
-/// has already locked, the phase actor only reacts to WS session *deltas*
-/// and never sees the pre-existing lock — that game's skins never inject.
-/// Proactively fetches the session and, if it shows a lock we haven't
-/// recorded, runs it through the exact same `process_session` pipeline the
-/// WS fan-out uses instead of a parallel copy (Python had three
-/// near-duplicate copies of the lock-handling logic — see `process_session`'s
-/// doc comment). Called from `champ_select_entry` (covers "already locked
-/// when we first observe ChampSelect") and every poll tick (covers a lock
-/// that lands between actor start and the first WS session delta); the
-/// `should_attempt_late_lock_bootstrap` guard makes both call sites a cheap
-/// no-op once `own_champion_locked` is true.
+/// If the app starts (or the LCU reconnects) while champ select is already
+/// underway and the local player has already locked, the phase actor only
+/// reacts to WS session *deltas* and never sees the pre-existing lock —
+/// that game's skins never inject. Proactively fetches the session and, if
+/// it shows an unrecorded lock, runs it through the same `process_session`
+/// pipeline the WS fan-out uses (not a parallel copy). Called from
+/// `champ_select_entry` and every poll tick; `should_attempt_late_lock_bootstrap`
+/// makes both a cheap no-op once `own_champion_locked` is true.
 async fn bootstrap_late_locked_champion(
     skins: &Arc<SkinsState>,
     client: &reqwest::Client,
@@ -567,10 +529,8 @@ async fn bootstrap_late_locked_champion(
 }
 
 /// Champion lock/exchange detection + the consolidated "on champion locked"
-/// pipeline trigger, ported from `champion_lock_handler.py::
-/// handle_session_locks` + `on_own_champion_locked` + `handle_champion_exchange`
-/// (the Python original had these near-duplicated across the WS handler and the late-lock
-/// bootstrap in `lcu_monitor_thread.py`; this is the one place it happens).
+/// pipeline trigger — Python had this near-duplicated across the WS handler
+/// and the late-lock bootstrap; this is the one place it happens now.
 async fn process_session(
     skins: &Arc<SkinsState>,
     client: &reqwest::Client,
@@ -764,12 +724,10 @@ mod tests {
         assert!(!should_attempt_late_lock_bootstrap(None, false), "no phase yet - no-op");
     }
 
-    /// Exercises the SAME pipeline `bootstrap_late_locked_champion` calls
-    /// after its proactive session fetch, fed a session whose local player
-    /// cell already shows a completed pick — the exact shape a late-lock
-    /// bootstrap's fetch would see for a champion locked before the phase
-    /// actor ever observed a WS session delta. Proves the reused-not-duplicated
-    /// path actually detects a pre-existing lock end to end.
+    /// Exercises the SAME pipeline `bootstrap_late_locked_champion` calls,
+    /// fed a session whose local cell already shows a completed pick — the
+    /// shape a late-lock bootstrap fetch would see. Proves the
+    /// reused-not-duplicated path detects a pre-existing lock end to end.
     #[tokio::test]
     async fn process_session_detects_a_pre_existing_lock_like_a_late_bootstrap_fetch_would() {
         use crate::skins::lcu_ext::{ActionData, Cell};

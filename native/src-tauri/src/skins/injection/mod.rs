@@ -1,11 +1,9 @@
 //! Injection subsystem (S3) — cslol mod-tools orchestration. `InjectionManager`
-//! is ported from `injection\core\manager.py` (`InjectionManager`), folding in
-//! `injection\config\threshold_manager.py` (`ThresholdManager`) as a couple of
-//! plain fields/methods rather than a separate collaborator object — there's
-//! no `shared_state` back-reference to propagate threshold changes into here
-//! (S4's `state.rs`/bridge own broadcasting that), so the extra class Python
-//! needed to hold one float and a change-detector doesn't pull its weight in
-//! Rust.
+//! is ported from `injection\core\manager.py`, folding in
+//! `threshold_manager.py`'s `ThresholdManager` as plain fields/methods rather
+//! than a separate collaborator — there's no `shared_state` back-reference to
+//! propagate threshold changes here (S4 owns broadcasting that), so the
+//! extra class Python needed doesn't pull its weight in Rust.
 
 #![allow(dead_code)] // consumed by S5+ (ticker/trigger wiring)
 
@@ -29,9 +27,8 @@ use crate::skins::slog::{log_error, log_info, log_warn};
 
 /// `config.INJECTION_LOCK_TIMEOUT_S` — timeout for acquiring the injection lock.
 const INJECTION_LOCK_TIMEOUT: Duration = Duration::from_millis(2000);
-/// `get_config_float("General", "injection_threshold", 0.5)`'s default —
-/// S4's config surface is expected to push a real value in via
-/// `refresh_injection_threshold` once it exists.
+/// Default injection threshold; config pushes a real value in via
+/// `refresh_injection_threshold`.
 const DEFAULT_INJECTION_THRESHOLD_S: f64 = 0.5;
 
 struct Inner {
@@ -46,21 +43,17 @@ struct Inner {
 
 /// Manages skin injection with automatic triggering (ported from
 /// `InjectionManager`). All mutable state lives behind one `Mutex<Inner>` —
-/// matching `docs/SKINS_PORT.md`'s "Threading model" (one coarse lock beats
-/// Python's per-object `threading.Lock`s) — so Python's separate
-/// `injection_lock`/`_cleanup_lock`/`_cleanup_in_progress` trio collapses
-/// onto the one guard here. `game_dir` is supplied by the caller (S4/S5's
-/// config or LCU-path wiring) via `set_game_dir` rather than detected here —
-/// `injection/game/game_detector.py` isn't in this milestone's scope.
+/// one coarse lock beats Python's per-object `threading.Lock`s, so its
+/// separate `injection_lock`/`_cleanup_lock`/`_cleanup_in_progress` trio
+/// collapses onto this one guard. `game_dir` is supplied by the caller via
+/// `set_game_dir` rather than self-detected (`game_detector.py` not ported).
 pub struct InjectionManager {
     tools_dir: PathBuf,
     mods_dir: PathBuf,
     zips_dir: PathBuf,
     overlay_dir: PathBuf,
     game_dir: Mutex<Option<PathBuf>>,
-    /// Fast pre-check ahead of the real lock (ported from Python's
-    /// `self._injection_in_progress` boolean, checked before
-    /// `injection_lock.acquire(timeout=...)`).
+    /// Fast pre-check ahead of the real lock, checked before the timed acquire.
     injection_in_progress: AtomicBool,
     /// Safety policy hook (P0-A) — consulted immediately before every gated
     /// operation. `None` (never wired) FAILS CLOSED: all injection denied.
@@ -70,12 +63,12 @@ pub struct InjectionManager {
 
 impl InjectionManager {
     pub fn new(tools_dir: PathBuf, mods_dir: PathBuf, zips_dir: PathBuf, overlay_dir: PathBuf) -> Self {
-        // Startup carcass sweep: a build aborted by a crash/kill can leave a
+        // Startup carcass sweep: a crash/kill mid-build can leave a
         // partially-written overlay (observed at 17 GB) and stale mod
-        // junctions behind with no later injection to clean them. Both dirs
-        // are rebuilt from scratch on every injection, so clearing them here
-        // is always safe (locked files from a still-running previous-session
-        // runoverlay just fail the remove non-fatally).
+        // junctions with no later injection to clean them. Both dirs are
+        // rebuilt from scratch every injection, so clearing here is always
+        // safe (a locked file from a still-running previous runoverlay just
+        // fails the remove non-fatally).
         storage::clean_mods_dir(&mods_dir);
         storage::clean_overlay_dir(&overlay_dir);
         Self {
@@ -99,9 +92,7 @@ impl InjectionManager {
     }
 
     /// Set (or update) the detected League game directory. Must be called
-    /// before injection can initialize — mirrors `SkinInjector.__init__`'s
-    /// `game_dir` parameter, just supplied externally instead of
-    /// self-detected.
+    /// before injection can initialize.
     pub fn set_game_dir(&self, game_dir: PathBuf) {
         *self.game_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(game_dir);
     }
@@ -167,9 +158,8 @@ impl InjectionManager {
     }
 
     /// Reload the injection threshold so config/tray changes apply
-    /// immediately (ported from `ThresholdManager.refresh` /
-    /// `InjectionManager.refresh_injection_threshold`). Allows `0.0` as a
-    /// deliberate "no cooldown" value but guards against negatives.
+    /// immediately. Allows `0.0` as a deliberate "no cooldown" value but
+    /// guards against negatives.
     pub fn refresh_injection_threshold(&self, new_threshold: f64) -> f64 {
         let clamped = new_threshold.max(0.0);
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -185,9 +175,7 @@ impl InjectionManager {
     }
 
     /// Apply config `monitor_auto_resume_timeout_secs` to the owned
-    /// `GameMonitor` (ported call site: `lib.rs`'s `setup()`, right after
-    /// construction). Forwards to `GameMonitor::set_auto_resume_timeout`,
-    /// which keeps the 1..=180s clamp.
+    /// `GameMonitor` (forwards to `set_auto_resume_timeout`'s 1..=180s clamp).
     pub fn set_auto_resume_timeout(&self, secs: f64) {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).game_monitor.set_auto_resume_timeout(secs);
     }
@@ -212,12 +200,10 @@ impl InjectionManager {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).current_champion.clone()
     }
 
-    /// Immediately inject a specific skin, with optional chroma (ported from
-    /// `InjectionManager.inject_skin_immediately`).
+    /// Immediately inject a specific skin, with optional chroma.
     ///
-    /// `extra_mod_names` is `injector::SkinInjector::inject_skin`'s
-    /// replacement for Python's `extra_mods_callback` (party/category mods
-    /// the caller has already extracted) — see that function's doc comment.
+    /// `extra_mod_names` replaces Python's `extra_mods_callback`: party/category
+    /// mods the caller has already extracted (see `SkinInjector::inject_skin`).
     pub fn inject_skin_immediately(
         &self,
         skin_name: &str,
@@ -226,13 +212,11 @@ impl InjectionManager {
         champion_id: Option<i64>,
         extra_mod_names: &[String],
     ) -> bool {
-        // Base-skin short-circuit (`skin_{id}` where `id == 0` or
-        // `id == champion_id * 1000`): picking your base skin with nothing to
-        // overlay means there's nothing to inject. BUT a custom/library mod or
-        // party mods staged in `extra_mod_names` must still be injected OVER
-        // the base skin — library mods live at `mods/skins/{champ*1000}`, so
-        // their base-skin target would otherwise be wrongly skipped (a custom
-        // "Separatist Jhin" on base Jhin 202000 silently no-op'd this way).
+        // Base-skin short-circuit (`skin_{id}` where `id == 0` or `champion_id
+        // * 1000`): nothing to overlay on your own base skin. BUT a custom
+        // mod or party mods in `extra_mod_names` must still inject OVER the
+        // base skin — library mods live at `mods/skins/{champ*1000}`, so
+        // skipping here silently no-op'd a custom "Separatist Jhin" on base Jhin.
         if extra_mod_names.is_empty() {
             if let Some(skin_id_str) = skin_name.strip_prefix("skin_") {
                 if let Ok(skin_id) = skin_id_str.split('_').next().unwrap_or(skin_id_str).parse::<i64>() {
@@ -252,10 +236,8 @@ impl InjectionManager {
             }
         }
 
-        // Fast pre-check ahead of the real lock (ported from Python's
-        // `self._injection_in_progress` boolean check). This IS the
-        // `ActiveJob` denial — the policy hook itself deliberately doesn't
-        // read this flag (see `evaluate_injection_policy`'s LOCKING NOTE).
+        // Fast pre-check ahead of the real lock. This IS the `ActiveJob`
+        // denial — the policy hook itself deliberately doesn't read this flag.
         if self.injection_in_progress.load(Ordering::SeqCst) {
             log_warn!("[SAFETY] Injection denied ({}) for {skin_name} - {}", InjectionDenial::ActiveJob.code(), InjectionDenial::ActiveJob.message());
             return false;
@@ -267,12 +249,10 @@ impl InjectionManager {
             return false;
         }
 
-        // Emulate `injection_lock.acquire(timeout=INJECTION_LOCK_TIMEOUT_S)`
-        // — `std::sync::Mutex` has no timed acquire, so poll `try_lock`
-        // instead of blocking indefinitely (a plain blocking `.lock()` here
-        // would make a concurrent caller wait out the ENTIRE injection,
-        // including the runoverlay babysitting loop that can span a whole
-        // game session — Python's timeout-then-bail behavior is the point).
+        // `std::sync::Mutex` has no timed acquire, so poll `try_lock` instead
+        // of blocking indefinitely — a plain blocking `.lock()` would make a
+        // concurrent caller wait out the ENTIRE injection (including the
+        // runoverlay babysitting loop, which can span a whole game session).
         let deadline = Instant::now() + INJECTION_LOCK_TIMEOUT;
         let guard_opt = loop {
             match self.inner.try_lock() {
@@ -298,11 +278,9 @@ impl InjectionManager {
             self.do_inject_locked(&mut guard, skin_name, chroma_id, champion_name, champion_id, extra_mod_names);
 
         log_info!("[INJECT] Injection completed - lock released");
-        // Stop monitor after injection completes (resumes the game if it's
-        // still suspended). The Python original did this after releasing `injection_lock`;
-        // here it happens while `guard` is still held, which is fine —
-        // `GameMonitor::stop` is self-contained and doesn't reach back into
-        // `InjectionManager`.
+        // Stop monitor after injection completes (resumes the game if still
+        // suspended). Happens while `guard` is still held, which is fine —
+        // `GameMonitor::stop` is self-contained and doesn't reach back into `InjectionManager`.
         guard.game_monitor.stop();
         self.injection_in_progress.store(false, Ordering::SeqCst);
 
@@ -310,12 +288,10 @@ impl InjectionManager {
     }
 
     /// Immediate mods-only injection: build the overlay from pre-staged mods
-    /// with NO primary skin. Same lock / game-monitor discipline as
-    /// `inject_skin_immediately`, minus the base-skin short-circuit (there is
-    /// no primary skin to classify). Used for a party peer who selected no
-    /// skin of their own but must still inject teammates' party skins — the
-    /// case that previously dropped ALL party skins (a peer sees nobody's
-    /// skin unless they themselves picked one).
+    /// with NO primary skin. Same lock/game-monitor discipline as
+    /// `inject_skin_immediately`, minus the base-skin short-circuit. Used for
+    /// a party peer who picked no skin but must still see teammates' party
+    /// skins — previously this dropped ALL party skins for such a peer.
     pub fn inject_mods_only_immediately(&self, mod_names: &[String]) -> bool {
         if mod_names.is_empty() {
             return false;
@@ -363,8 +339,7 @@ impl InjectionManager {
     }
 
     /// Locked body of `inject_mods_only_immediately` (mirrors
-    /// `do_inject_locked`'s init/threshold/monitor guards, then calls the
-    /// injector's mods-only overlay builder).
+    /// `do_inject_locked`'s init/threshold/monitor guards).
     fn do_inject_mods_only_locked(&self, inner: &mut Inner, mod_names: &[String]) -> bool {
         self.ensure_initialized(inner);
         if !inner.initialized || inner.injector.is_none() {
@@ -402,9 +377,8 @@ impl InjectionManager {
     }
 
     /// The locked body of `inject_skin_immediately`, factored out so the
-    /// caller can hold `guard` across both this call and the `stop()` that
-    /// follows it without fighting the borrow checker over a captured
-    /// `&mut` in a closure.
+    /// caller can hold `guard` across both this call and the following
+    /// `stop()` without fighting the borrow checker over a closure capture.
     fn do_inject_locked(
         &self,
         inner: &mut Inner,
@@ -452,22 +426,17 @@ impl InjectionManager {
         success
     }
 
-    /// Heal a stuck injection state at the start of a new champ select. This is
-    /// the fix for the "one leaked overlay blacks out skins for the rest of the
-    /// session" bug: an injection holds `self.inner` for the WHOLE game (its
-    /// babysit loop blocks until `runoverlay` exits), and `runoverlay`
-    /// sometimes never self-exits — so `inner` stays locked and
-    /// `injection_in_progress` stays `true`, and every later pick is rejected by
-    /// the fast pre-check with "Injection already in progress". It ALSO leaks
-    /// the `mod-tools.exe` process (which then locks the installer).
+    /// Heal a stuck injection state at the start of a new champ select. Fixes
+    /// "one leaked overlay blacks out skins for the rest of the session": an
+    /// injection holds `self.inner` for the WHOLE game, and `runoverlay`
+    /// sometimes never self-exits, so `inner` stays locked and
+    /// `injection_in_progress` stays `true` forever (and the leaked
+    /// `mod-tools.exe` locks the installer).
     ///
-    /// Crucially this must NOT lock `self.inner` (that's exactly what's stuck),
-    /// so it kills leaked `runoverlay` processes via OS enumeration and clears
-    /// the `injection_in_progress` flag directly. Killing the child makes any
-    /// stuck babysit loop's `try_wait` return, so it releases `inner` on its own
-    /// well before the next loadout injection fires. Safe to call on ChampSelect
-    /// entry: the previous game is definitively over, so no legitimate injection
-    /// is in flight.
+    /// Must NOT lock `self.inner` (that's exactly what's stuck) — instead
+    /// kills leaked `runoverlay` processes via OS enumeration and clears
+    /// `injection_in_progress` directly; killing the child releases `inner`
+    /// on its own. Safe on ChampSelect entry: the previous game is definitely over.
     pub fn reset_stuck_injection(&self) {
         crate::skins::injection::process::kill_runoverlay_processes_os();
         if self.injection_in_progress.swap(false, Ordering::SeqCst) {
@@ -501,14 +470,9 @@ impl InjectionManager {
         }
     }
 
-    /// Kill all runoverlay processes — ChampSelect cleanup (ported from
-    /// `InjectionManager.kill_all_runoverlay_processes`). The Python original ran this on a
-    /// background thread guarded by `_cleanup_in_progress`/`_cleanup_lock`
-    /// so ChampSelect phase transitions never blocked on it; this port runs
-    /// synchronously (the sweep itself is bounded by
-    /// `process::PROCESS_ENUM_TIMEOUT_S`) and leaves backgrounding it to the
-    /// S5 caller (e.g. `tokio::task::spawn_blocking`) if profiling shows
-    /// it's worth it.
+    /// Kill all runoverlay processes — ChampSelect cleanup. Runs
+    /// synchronously (bounded by `process::PROCESS_ENUM_TIMEOUT_S`); leaves
+    /// backgrounding it to the caller (e.g. `spawn_blocking`) if profiling shows it's worth it.
     pub fn kill_all_runoverlay_processes(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.game_monitor.stop();
@@ -537,14 +501,11 @@ impl InjectionManager {
     }
 }
 
-/// Base-skin confirmation timing tracker — ported from
-/// `injection\config\base_skin_tracker.py`. Tracks the elapsed time between
-/// forcing a base skin (LCU PATCH) and receiving the WebSocket confirmation
-/// that it applied, persisting up to `MAX_SAMPLES` samples to
-/// `%LOCALAPPDATA%\Chud\base_skin_samples.json` so the troubleshooting UI can
-/// recommend a threshold from real historical data instead of guessing.
-/// `time.perf_counter()` (monotonic elapsed) maps to `std::time::Instant`;
-/// the on-disk `ts` field stays Unix-epoch seconds like Python's `time.time()`.
+/// Base-skin confirmation timing tracker. Tracks elapsed time between
+/// forcing a base skin (LCU PATCH) and the WebSocket confirmation it
+/// applied, persisting up to `MAX_SAMPLES` samples to
+/// `base_skin_samples.json` so the troubleshooting UI can recommend a
+/// threshold from real historical data instead of guessing.
 pub mod base_skin_tracker {
     use std::path::PathBuf;
     use std::sync::Mutex;
