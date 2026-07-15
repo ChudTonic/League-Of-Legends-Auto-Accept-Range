@@ -1,16 +1,27 @@
 //! Relay websocket client (S6) — ported from `party/network/ws_relay.py`
 //! (`PartyRelay`). Connects to the already-deployed Cloudflare Worker relay
-//! (`relay-worker/`, service name `chud-party-relay`) and speaks its wire
-//! contract exactly — see that crate's `src/lib.rs` module doc, which this
-//! client must match byte-for-byte:
-//!   client -> server: `{"type":"join",summoner_id,summoner_name}`
+//! (`relay-worker/`, service name `chud-party-relay`) and speaks its PROTOCOL
+//! V2 wire contract exactly — see that crate's `src/lib.rs` module doc, which
+//! this client must match byte-for-byte:
+//!   client -> server: `{"type":"join","name":str,"pubkey":hex}`
 //!                     `{"type":"skin","skin":{...}|null}`
 //!                     `{"type":"leave"}`
 //!                     bare TEXT frame `"ping"` (keepalive @25s — NOT a
 //!                     WebSocket control-frame ping; the worker string-matches
 //!                     literal text and replies with literal text `"pong"`).
-//!   server -> client: `{"type":"members","members":[{summoner_id,summoner_name,skin?},...]}`
-//!                     (full roster, sent on every join/skin/leave — no diffs).
+//!   server -> client: `{"type":"welcome","member_id":u64,"epoch":hex}` (sent
+//!                     once per connect — a FRESH `member_id` every time; see
+//!                     [`SessionCallback`])
+//!                     `{"type":"members","epoch":hex,
+//!                      "members":[{member_id,name,pubkey,skin?},...]}`
+//!                     (full roster, sent on every join/skin/leave — no diffs)
+//!
+//! v2 (P0-F) carries NO summoner ids at all: the server assigns each socket a
+//! random `member_id` clients cannot claim, and clients identify themselves
+//! only by a display `name` + an ed25519 `pubkey`. Every selection is signed
+//! (bound to the room's `epoch` + our `member_id`) by the party manager, not
+//! this module — this client just relays bytes and hands the manager the
+//! `welcome`/`members` payloads to act on.
 //!
 //! The relay itself has a real (Cloudflare-issued) TLS cert, unlike the LCU's
 //! self-signed loopback cert `lcu_ws.rs` has to special-case — so this client
@@ -47,7 +58,10 @@ pub const DEFAULT_RELAY_URL: &str = "wss://chud-party-relay.jivy26.workers.dev";
 
 /// `compute_room_key` — `sha256(str(host_summoner_id).encode() + host_key).hexdigest()[:32]`,
 /// byte-exact with `ws_relay.py::compute_room_key` so a host and any joiner
-/// pasting their token independently derive the identical room key.
+/// pasting their token independently derive the identical room key. As of
+/// P0-F the first argument is an EPHEMERAL per-`enable()` id, not a real
+/// summoner id — see `party::manager::enable_inner`'s doc comment; the hash
+/// itself doesn't care what the number means.
 pub fn compute_room_key(host_summoner_id: u64, host_key: &[u8; 32]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(host_summoner_id.to_string().as_bytes());
@@ -71,12 +85,16 @@ pub fn compute_lobby_room_key(party_id: &str) -> String {
     hex[..32].to_string()
 }
 
-/// One entry from a `{"type":"members",...}` broadcast.
+/// One entry from a `{"type":"members",...}` broadcast. `member_id` is
+/// server-assigned (never client-chosen); `name`/`pubkey` are empty for a
+/// socket that connected but hasn't sent a valid `join` yet.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RelayMember {
-    pub summoner_id: u64,
+    pub member_id: u64,
     #[serde(default)]
-    pub summoner_name: String,
+    pub name: String,
+    #[serde(default)]
+    pub pubkey: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin: Option<Value>,
 }
@@ -87,7 +105,7 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// connection task — mirrors the Python original's ad hoc `_send_json` call
 /// sites (`join`/`send_skin`/`disconnect`'s `{"type":"leave"}`).
 enum OutCmd {
-    Join { summoner_id: u64, summoner_name: String },
+    Join { name: String, pubkey: String },
     Skin(Option<Value>),
     Leave,
 }
@@ -97,19 +115,32 @@ enum OutCmd {
 /// place but may call it many times over the relay's lifetime.
 pub type MembersCallback = Arc<dyn Fn(Vec<RelayMember>) + Send + Sync>;
 
+/// Session-established callback: fired once per (re)connect, right after the
+/// server's `welcome` (a FRESH `member_id` + the room's `epoch`). The party
+/// manager uses this to (re)sign and rebroadcast its current selection bound
+/// to the new identity — a selection signed under a PRIOR member_id/epoch is
+/// unverifiable once the socket reconnects, so it is never replayed (see
+/// `RelayShared::last_join`'s doc comment).
+pub type SessionCallback = Arc<dyn Fn(u64, String) + Send + Sync>;
+
 struct RelayShared {
     connected: AtomicBool,
     /// Cleared by `disconnect()` so the reconnect loop stops trying after an
     /// intentional leave (as opposed to a transient drop, which retries).
     should_run: AtomicBool,
     members: StdMutex<Vec<RelayMember>>,
-    /// Last `join` and `skin` we sent, so a RECONNECTED socket can re-announce
-    /// them. `join`/`skin` are one-shot `OutCmd`s consumed on the first socket;
-    /// without replay, a client that drops + reconnects becomes a ghost in the
-    /// room (the server never re-learns who it is, and its skin updates stop
-    /// reaching peers) until the user manually re-enables party mode.
-    last_join: StdMutex<Option<(u64, String)>>,
-    last_skin: StdMutex<Option<Value>>,
+    /// Last `join` we sent (name, pubkey), so a RECONNECTED socket can
+    /// re-announce itself — without this a client that drops + reconnects
+    /// becomes a nameless ghost in the room until the user manually
+    /// re-enables party mode. The last SKIN is deliberately NOT kept here
+    /// (v2): its signature is bound to the OLD member_id + epoch and would
+    /// fail verification under the fresh session a reconnect gets, so
+    /// `on_session` triggers the manager to re-sign and rebroadcast instead.
+    last_join: StdMutex<Option<(String, String)>>,
+    /// This connection's server-assigned identity, `(member_id, epoch)`, set
+    /// from the `welcome` message and kept fresh (epoch only) by every
+    /// `members` broadcast. `None` until the first `welcome` arrives.
+    my_session: StdMutex<Option<(u64, String)>>,
 }
 
 /// WebSocket connection to a shared party room (ported from `PartyRelay`).
@@ -130,7 +161,12 @@ impl PartyRelay {
     /// `None` on initial-connect failure, exactly like Python's `connect()`
     /// returning `False` — the caller logs "party mode limited" and moves on
     /// without starting any loops (mirrors `PartyManager.enable`).
-    pub async fn connect(relay_url: &str, room_key: String, on_members_changed: MembersCallback) -> Option<Self> {
+    pub async fn connect(
+        relay_url: &str,
+        room_key: String,
+        on_members_changed: MembersCallback,
+        on_session: SessionCallback,
+    ) -> Option<Self> {
         let url = format!("{relay_url}/room?key={room_key}");
         log_info!("[RELAY] Connecting to room {}...", short_key(&room_key));
 
@@ -152,7 +188,7 @@ impl PartyRelay {
             should_run: AtomicBool::new(true),
             members: StdMutex::new(Vec::new()),
             last_join: StdMutex::new(None),
-            last_skin: StdMutex::new(None),
+            my_session: StdMutex::new(None),
         });
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
@@ -160,7 +196,7 @@ impl PartyRelay {
         let task_room_key = room_key.clone();
         let task_shared = shared.clone();
         tauri::async_runtime::spawn(async move {
-            run_connection(first_ws, relay_url, task_room_key, task_shared, cmd_rx, on_members_changed).await;
+            run_connection(first_ws, relay_url, task_room_key, task_shared, cmd_rx, on_members_changed, on_session).await;
         });
 
         Some(Self { room_key, shared, cmd_tx })
@@ -178,9 +214,18 @@ impl PartyRelay {
         self.shared.members.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// `PartyRelay.join` — announce ourselves to the room.
-    pub fn join(&self, summoner_id: u64, summoner_name: String) {
-        let _ = self.cmd_tx.send(OutCmd::Join { summoner_id, summoner_name });
+    /// This connection's server-assigned `(member_id, epoch)`, once the
+    /// `welcome` has arrived. `None` briefly right after connect (before the
+    /// `welcome` lands) or between connections during a reconnect.
+    pub fn session(&self) -> Option<(u64, String)> {
+        self.shared.my_session.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// `PartyRelay.join` — announce ourselves to the room: a display name and
+    /// our ephemeral ed25519 pubkey (hex). No summoner id — v2 has none on
+    /// the wire at all (see this module's doc comment).
+    pub fn join(&self, name: String, pubkey: String) {
+        let _ = self.cmd_tx.send(OutCmd::Join { name, pubkey });
     }
 
     /// `PartyRelay.send_skin` — broadcast our current selection (`None` clears it).
@@ -204,7 +249,7 @@ pub(crate) fn short_key(room_key: &str) -> &str {
 }
 
 /// The connection task body: owns the socket, forwards `OutCmd`s to it,
-/// handles the ping/pong keepalive and the `members` broadcast, and
+/// handles the ping/pong keepalive and the `welcome`/`members` messages, and
 /// reconnects on an unexpected drop (see this module's doc comment on why
 /// that's an addition over the Python original, which has no reconnect).
 async fn run_connection(
@@ -214,6 +259,7 @@ async fn run_connection(
     shared: Arc<RelayShared>,
     mut cmd_rx: mpsc::UnboundedReceiver<OutCmd>,
     on_members_changed: MembersCallback,
+    on_session: SessionCallback,
 ) {
     let mut pending_ws = Some(first_ws);
 
@@ -240,8 +286,12 @@ async fn run_connection(
             }
         };
 
-        let left_intentionally = run_one_connection(ws, &shared, &mut cmd_rx, &on_members_changed).await;
+        let left_intentionally = run_one_connection(ws, &shared, &mut cmd_rx, &on_members_changed, &on_session).await;
         shared.connected.store(false, Ordering::SeqCst);
+        // A reconnect gets a brand-new `member_id`/`epoch` from the server's
+        // next `welcome` — drop the stale one now so nothing signs against
+        // it in the gap before that arrives.
+        *shared.my_session.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
         if left_intentionally || !shared.should_run.load(Ordering::SeqCst) {
             break;
@@ -262,26 +312,23 @@ async fn run_one_connection(
     shared: &Arc<RelayShared>,
     cmd_rx: &mut mpsc::UnboundedReceiver<OutCmd>,
     on_members_changed: &MembersCallback,
+    on_session: &SessionCallback,
 ) -> bool {
     let (mut write, mut read) = ws.split();
     let mut ping_timer = tokio::time::interval(PING_INTERVAL);
     ping_timer.tick().await; // first tick fires immediately — consume it so the real cadence is 25s.
 
-    // Re-announce ourselves on (re)connect. On the FIRST connection both are
-    // None (the manager sends `join` right after connecting), so this is a
-    // no-op; on a RECONNECT they carry the last join + skin, without which the
-    // fresh socket would be a ghost the server never re-registers.
+    // Re-announce ourselves on (re)connect. On the FIRST connection this is
+    // None (the manager sends `join` right after connecting), so it's a
+    // no-op; on a RECONNECT it carries the last join, without which the
+    // fresh socket would be a nameless ghost the server never re-registers.
+    // The last SKIN is intentionally NOT replayed here — see
+    // `RelayShared::last_join`'s doc comment on why (its signature would no
+    // longer verify under this connection's fresh member_id/epoch).
     {
         let join = shared.last_join.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some((summoner_id, summoner_name)) = join {
-            let payload = json!({"type":"join","summoner_id":summoner_id,"summoner_name":summoner_name});
-            if write.send(Message::Text(payload.to_string())).await.is_err() {
-                return false;
-            }
-        }
-        let skin = shared.last_skin.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(skin) = skin {
-            let payload = json!({"type":"skin","skin":skin});
+        if let Some((name, pubkey)) = join {
+            let payload = json!({"type":"join","name":name,"pubkey":pubkey});
             if write.send(Message::Text(payload.to_string())).await.is_err() {
                 return false;
             }
@@ -297,17 +344,16 @@ async fn run_one_connection(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(OutCmd::Join { summoner_id, summoner_name }) => {
+                    Some(OutCmd::Join { name, pubkey }) => {
                         // Remember for reconnect replay before sending.
                         *shared.last_join.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some((summoner_id, summoner_name.clone()));
-                        let payload = json!({"type":"join","summoner_id":summoner_id,"summoner_name":summoner_name});
+                            Some((name.clone(), pubkey.clone()));
+                        let payload = json!({"type":"join","name":name,"pubkey":pubkey});
                         if write.send(Message::Text(payload.to_string())).await.is_err() {
                             return false;
                         }
                     }
                     Some(OutCmd::Skin(skin)) => {
-                        *shared.last_skin.lock().unwrap_or_else(|e| e.into_inner()) = skin.clone();
                         let payload = json!({"type":"skin","skin":skin});
                         if write.send(Message::Text(payload.to_string())).await.is_err() {
                             return false;
@@ -315,9 +361,8 @@ async fn run_one_connection(
                     }
                     Some(OutCmd::Leave) => {
                         // Intentional leave — forget our identity so a later
-                        // re-enable doesn't replay a stale join/skin.
+                        // re-enable doesn't replay a stale join.
                         *shared.last_join.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                        *shared.last_skin.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         let _ = write.send(Message::Text(json!({"type":"leave"}).to_string())).await;
                         let _ = write.close().await;
                         return true;
@@ -341,14 +386,37 @@ async fn run_one_connection(
                             continue;
                         }
                         let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
-                        if value.get("type").and_then(Value::as_str) == Some("members") {
-                            let members: Vec<RelayMember> = value
-                                .get("members")
-                                .and_then(|m| serde_json::from_value(m.clone()).ok())
-                                .unwrap_or_default();
-                            *shared.members.lock().unwrap_or_else(|e| e.into_inner()) = members.clone();
-                            log_info!("[RELAY] Members updated: {} in room", members.len());
-                            on_members_changed(members);
+                        match value.get("type").and_then(Value::as_str) {
+                            Some("welcome") => {
+                                // Fresh identity for THIS connection — never
+                                // client-chosen. Store it and let the manager
+                                // (re)sign + rebroadcast against it.
+                                let member_id = value.get("member_id").and_then(Value::as_u64);
+                                let epoch = value.get("epoch").and_then(Value::as_str).map(str::to_string);
+                                if let (Some(member_id), Some(epoch)) = (member_id, epoch) {
+                                    *shared.my_session.lock().unwrap_or_else(|e| e.into_inner()) =
+                                        Some((member_id, epoch.clone()));
+                                    on_session(member_id, epoch);
+                                }
+                            }
+                            Some("members") => {
+                                // Keep the stored epoch fresh — the server
+                                // re-sends it on every broadcast, not just welcome.
+                                if let Some(epoch) = value.get("epoch").and_then(Value::as_str) {
+                                    let mut session = shared.my_session.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some((_, e)) = session.as_mut() {
+                                        *e = epoch.to_string();
+                                    }
+                                }
+                                let members: Vec<RelayMember> = value
+                                    .get("members")
+                                    .and_then(|m| serde_json::from_value(m.clone()).ok())
+                                    .unwrap_or_default();
+                                *shared.members.lock().unwrap_or_else(|e| e.into_inner()) = members.clone();
+                                log_info!("[RELAY] Members updated: {} in room", members.len());
+                                on_members_changed(members);
+                            }
+                            _ => {}
                         }
                     }
                     Some(Ok(_)) => {}

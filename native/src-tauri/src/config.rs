@@ -277,6 +277,34 @@ impl Default for Network {
     }
 }
 
+/// Party mode (P0-F). OFF by default, and `PartyManager::enable` refuses to
+/// run until the versioned data-sharing consent has been accepted — a fresh
+/// install (or an upgrade from the auto-enable era) makes NO relay
+/// connection before the user opts in. What is transmitted, to whom, and
+/// for how long is documented in `docs/PRIVACY-PARTY.md`; bumping the
+/// current consent version in `party::manager` re-gates everyone whenever
+/// that disclosure changes materially.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Party {
+    /// User's persisted on/off choice. Consent is checked independently —
+    /// `enabled=true` with stale/no consent still refuses to connect.
+    pub enabled: bool,
+    /// Version of the party data-sharing disclosure the user accepted
+    /// (0 = never / revoked).
+    pub consent_version: u32,
+    /// Auto-download announcer packs peers advertise (verified against the
+    /// Library catalog before any fetch). Off by default — peer-triggered
+    /// downloads need their own opt-in on top of party consent.
+    pub auto_download_peer_announcers: bool,
+}
+
+impl Default for Party {
+    fn default() -> Self {
+        Self { enabled: false, consent_version: 0, auto_download_peer_announcers: false }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -290,6 +318,7 @@ pub struct Config {
     pub presence: Presence,
     pub library: Library,
     pub network: Network,
+    pub party: Party,
 }
 
 /// Per-user config file path: `%APPDATA%/LeagueOfLegendsTools/config.json`.
@@ -320,5 +349,20 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&path, serde_json::to_string_pretty(self)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Party mode (P0-F) must ship fully opted-out: no auto-connect, no
+    /// accepted disclosure, no peer-triggered downloads.
+    #[test]
+    fn party_defaults_are_off() {
+        let p = Party::default();
+        assert!(!p.enabled);
+        assert_eq!(p.consent_version, 0);
+        assert!(!p.auto_download_peer_announcers);
     }
 }

@@ -485,11 +485,17 @@ fn injection_policy_json(state: &AppState) -> serde_json::Value {
 fn skins_snapshot(state: &AppState) -> serde_json::Value {
     let cfg = state.config.lock_safe().skins.clone();
     let ack_version = state.config.lock_safe().safety.skins_ack_version;
+    let party_cfg = state.config.lock_safe().party.clone();
     let bridge_port = state.skins_bridge.lock_safe().as_ref().map(|b| b.port());
     let checks = skins_status_checks();
     let party = match state.skins_party.lock_safe().as_ref() {
         Some(p) => p.get_state(),
-        None => json!({ "enabled": false, "my_token": null, "my_summoner_id": null, "my_summoner_name": "Unknown", "peers": [] }),
+        None => json!({
+            "enabled": false, "my_token": null, "my_summoner_id": null, "my_summoner_name": "Unknown", "peers": [],
+            "consent_ok": party_cfg.consent_version >= skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
+            "consent_required_version": skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
+            "auto_download_peer_announcers": party_cfg.auto_download_peer_announcers,
+        }),
     };
     json!({
         "enabled": cfg.enabled,
@@ -750,20 +756,49 @@ fn skins_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     skins_diagnostics_value(&checks, bridge_port)
 }
 
+/// Fallback `party-state`-shaped JSON for the (brief) window before
+/// `setup()` has built the `PartyManager` yet — reads consent straight from
+/// config so the UI's gate still renders correctly even then.
+fn skins_party_fallback_state(state: &AppState) -> serde_json::Value {
+    let c = state.config.lock_safe();
+    json!({
+        "enabled": false, "my_token": null, "my_summoner_id": null, "my_summoner_name": "Unknown", "peers": [],
+        "consent_ok": c.party.consent_version >= skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
+        "consent_required_version": skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
+        "auto_download_peer_announcers": c.party.auto_download_peer_announcers,
+    })
+}
+
+/// Enable party mode. Persists `party.enabled=true` only when `enable()`
+/// actually succeeds (P0-F: consent is checked inside `enable()` itself, so
+/// a not-yet-consented user's toggle never gets persisted as "on").
 #[tauri::command]
 async fn skins_party_enable(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let party = { state.skins_party.lock_safe().clone() };
     let Some(party) = party else { return Err("Skins subsystem not ready yet".to_string()) };
     party.enable().await?;
+    {
+        let mut cfg = state.config.lock_safe();
+        cfg.party.enabled = true;
+        let _ = cfg.save();
+    }
+    state.config_gen.fetch_add(1, Ordering::SeqCst);
     Ok(party.get_state())
 }
 
+/// Disable party mode. Persists `party.enabled=false` first, then tears down
+/// the live manager (so the flag is correct on disk even if disable() were
+/// somehow interrupted).
 #[tauri::command]
 async fn skins_party_disable(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    {
+        let mut cfg = state.config.lock_safe();
+        cfg.party.enabled = false;
+        let _ = cfg.save();
+    }
+    state.config_gen.fetch_add(1, Ordering::SeqCst);
     let party = { state.skins_party.lock_safe().clone() };
-    let Some(party) = party else {
-        return Ok(json!({ "enabled": false, "my_token": null, "my_summoner_id": null, "my_summoner_name": "Unknown", "peers": [] }));
-    };
+    let Some(party) = party else { return Ok(skins_party_fallback_state(&state)) };
     party.disable().await;
     Ok(party.get_state())
 }
@@ -783,7 +818,48 @@ async fn skins_party_add_peer(token: String, state: tauri::State<'_, Arc<AppStat
 fn skins_party_get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     match state.skins_party.lock_safe().as_ref() {
         Some(party) => party.get_state(),
-        None => json!({ "enabled": false, "my_token": null, "my_summoner_id": null, "my_summoner_name": "Unknown", "peers": [] }),
+        None => skins_party_fallback_state(&state),
+    }
+}
+
+/// Persist accepted/revoked party data-sharing consent (P0-F,
+/// `docs/PRIVACY-PARTY.md`). Revoking ALSO force-disables party mode and
+/// disconnects immediately — you can't stay connected with consent pulled
+/// (matches `PartyManager::enable`'s own consent re-check).
+#[tauri::command]
+async fn skins_party_set_consent(accepted: bool, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    {
+        let mut cfg = state.config.lock_safe();
+        cfg.party.consent_version = if accepted { skins::party::manager::CURRENT_PARTY_CONSENT_VERSION } else { 0 };
+        if !accepted {
+            cfg.party.enabled = false;
+        }
+        let _ = cfg.save();
+    }
+    state.config_gen.fetch_add(1, Ordering::SeqCst);
+
+    let party = { state.skins_party.lock_safe().clone() };
+    let Some(party) = party else { return Ok(skins_party_fallback_state(&state)) };
+    if !accepted {
+        party.disable().await;
+    }
+    Ok(party.get_state())
+}
+
+/// Persist the peer-announcer auto-download opt-in (P0-F) — off by default;
+/// see `PartyManager::maybe_download_peer_announcer`'s catalog-verification
+/// gate, which this toggle sits in front of.
+#[tauri::command]
+fn skins_party_set_auto_announcers(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    {
+        let mut cfg = state.config.lock_safe();
+        cfg.party.auto_download_peer_announcers = enabled;
+        let _ = cfg.save();
+    }
+    state.config_gen.fetch_add(1, Ordering::SeqCst);
+    match state.skins_party.lock_safe().as_ref() {
+        Some(party) => party.get_state(),
+        None => skins_party_fallback_state(&state),
     }
 }
 
@@ -1458,6 +1534,8 @@ pub fn run() {
             skins_party_disable,
             skins_party_add_peer,
             skins_party_get_state,
+            skins_party_set_consent,
+            skins_party_set_auto_announcers,
             runes_import_now,
             set_appear_offline,
             get_appear_offline,
@@ -1581,14 +1659,21 @@ pub fn run() {
             let party_manager = skins::party::manager::PartyManager::new(&handle, st.skins.clone(), bridge_handle);
             *st.skins_party.lock_safe() = Some(party_manager.clone());
 
-            // Seamless party: auto-enable at startup so there's no button to
-            // press. `enable()` retries until the LCU is reachable, then the
-            // auto-room loop joins the shared lobby room whenever you're in a
-            // lobby — party members converge with zero tokens/clicks. Idles
-            // harmlessly (personal room, no peers) when solo.
-            tauri::async_runtime::spawn(async move {
-                let _ = party_manager.enable().await;
-            });
+            // Party mode (P0-F): NO auto-connect. A fresh install (or an
+            // upgrade from the old always-on auto-enable era) makes zero
+            // relay connections until the user has both turned Party on AND
+            // accepted the current data-sharing disclosure version (see
+            // docs/PRIVACY-PARTY.md). `enable()` itself re-checks consent —
+            // this is just the startup-resume path for a user who already did.
+            let (party_enabled, party_consent_version) = {
+                let c = st.config.lock_safe();
+                (c.party.enabled, c.party.consent_version)
+            };
+            if party_enabled && party_consent_version >= skins::party::manager::CURRENT_PARTY_CONSENT_VERSION {
+                tauri::async_runtime::spawn(async move {
+                    let _ = party_manager.enable().await;
+                });
+            }
 
             *st.skins_phase.lock_safe() = Some(phase_handle);
 

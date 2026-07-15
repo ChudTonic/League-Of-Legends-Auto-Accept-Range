@@ -12,7 +12,13 @@
 //   commands: skins_get_state, skins_save_settings, skins_download,
 //             skins_activate_pengu, skins_set_enabled, skins_diagnostics,
 //             skins_party_enable, skins_party_disable, skins_party_add_peer,
-//             skins_party_get_state
+//             skins_party_get_state, skins_party_set_consent,
+//             skins_party_set_auto_announcers
+//   Party mode (P0-F) is gated behind a versioned data-sharing consent
+//   (party.consent_ok / consent_required_version in skins_get_state's
+//   "party" section) — see docs/PRIVACY-PARTY.md. Nothing party-related
+//   connects anywhere until skins_party_set_consent({accepted:true}) has
+//   been called.
 //   events:   skins-download-progress ({phase, done, total})
 //             skins-download-done     ({ok, error?})
 //   Party has no push event: the backend's "party-state" broadcast goes out
@@ -455,7 +461,7 @@ const DEFAULT_SKINS_STATE = {
   enabled: false, ackOk: false, ackVersion: 0, ackRequiredVersion: 1, policy: null,
   bridgePort: null, penguActive: false, skinsDownloaded: false, hashesReady: false,
   leaguePath: "", injectionThresholdMs: 300, autoResumeSecs: 25, autoDownload: true,
-  party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [] },
+  party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [], consent_ok: false, consent_required_version: 1, auto_download_peer_announcers: false },
   diagnostics: { bridgePort: null, penguActive: false, toolsAvailable: false, dllValid: false, skinsDownloaded: false, hashesReady: false, dataDir: "" },
 };
 let skinsState = null;
@@ -576,6 +582,18 @@ function skinsSettingsCard() {
 
 function skinsPartyCardInner() {
   const p = skinsState.party || DEFAULT_SKINS_STATE.party;
+  // Consent gate (P0-F): nothing party-related connects anywhere until this
+  // is accepted — show the disclosure strip instead of any enable control.
+  // See docs/PRIVACY-PARTY.md for the full disclosure this summarizes.
+  if (!p.consent_ok) {
+    return `
+      <div class="set-card-title"><span class="ci">${ico("profile")}</span>Party Mode — data sharing</div>
+      <div class="dim" style="font-size:12.5px;line-height:1.55;margin:2px 0 12px">
+        Shares your Riot game name and your live skin/announcer picks with Chud users in your lobby, via Chud's Cloudflare relay.
+        Held in memory only while connected; nothing is stored. See <span class="mono">docs/PRIVACY-PARTY.md</span> in the repo for the full disclosure.
+      </div>
+      <button class="btn primary sm" id="skinsPartyAcceptConsent">Accept &amp; unlock Party</button>`;
+  }
   const peers = p.peers || [];
   const peerRows = peers.length
     ? peers.map((pr) => `<div class="diag-row"><span class="diag-k">${esc(pr.summoner_name || "Unknown")}${pr.in_lobby ? " · in lobby" : ""}</span><span class="diag-v">${pr.skin_selection ? `Champion ${esc(pr.skin_selection.champion_id)} · Skin ${esc(pr.skin_selection.skin_id)}` : "No selection yet"}</span></div>`).join("")
@@ -584,6 +602,7 @@ function skinsPartyCardInner() {
     <div class="set-card-title"><span class="ci">${ico("profile")}</span>Party Mode</div>
     <div class="set-list">
       ${setField("Enable party mode", "Share your skin picks with your lobby in real time", `<div class="tog ${p.enabled ? "on" : ""}" id="skinsPartyToggle"><div class="knob"></div></div>`)}
+      ${setField("Auto-download peer announcer packs", "Fetch a teammate's announcer pack automatically — still verified against the Library catalog first", `<div class="tog ${p.auto_download_peer_announcers ? "on" : ""}" id="skinsPartyAutoAnnouncers"><div class="knob"></div></div>`)}
     </div>
     ${p.enabled ? `
     <div class="set-field" style="align-items:flex-start">
@@ -601,7 +620,8 @@ function skinsPartyCardInner() {
       </div>
     </div>
     <div class="diag-list" style="margin-top:6px">${peerRows}</div>
-    ` : ""}`;
+    ` : ""}
+    <div class="row" style="margin-top:10px"><a href="#" id="skinsPartyRevokeConsent" class="dim" style="font-size:11.5px;color:var(--magenta-soft)">Revoke data-sharing consent</a></div>`;
 }
 function skinsPartyCard() {
   return `<div class="glass set-card" id="skinsPartyCard">${skinsPartyCardInner()}</div>`;
@@ -841,8 +861,18 @@ function wireSkins() {
 }
 
 function wirePartyControls() {
+  const accept = document.getElementById("skinsPartyAcceptConsent");
+  if (accept) accept.onclick = onSkinsPartyAcceptConsent;
+
   const tog = document.getElementById("skinsPartyToggle");
   if (tog) tog.onclick = onSkinsPartyToggle;
+
+  const autoAnn = document.getElementById("skinsPartyAutoAnnouncers");
+  if (autoAnn) autoAnn.onclick = onSkinsPartyToggleAutoAnnouncers;
+
+  const revoke = document.getElementById("skinsPartyRevokeConsent");
+  if (revoke) revoke.onclick = async (e) => { e.preventDefault(); await onSkinsPartyRevokeConsent(); };
+
   const copyBtn = document.getElementById("skinsCopyToken");
   if (copyBtn) copyBtn.onclick = async () => {
     try {
@@ -945,11 +975,59 @@ async function onSkinsPartyToggle() {
     if (TAURI) {
       skinsState.party = enabling ? await TAURI.invoke("skins_party_enable") : await TAURI.invoke("skins_party_disable");
     } else {
-      skinsState.party = { enabled: enabling, my_token: enabling ? "CHUD:preview-token" : null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [] };
+      skinsState.party = { ...skinsState.party, enabled: enabling, my_token: enabling ? "CHUD:preview-token" : null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [] };
     }
     toast(enabling ? "Party mode enabled" : "Party mode disabled", "", enabling ? "success" : "info");
   } catch (e) {
     toast("Party mode error", String(e || "Failed to toggle party mode."), "danger");
+  }
+  if (currentPage === "skins") refreshPartyCard();
+}
+
+// P0-F: accept the data-sharing disclosure (docs/PRIVACY-PARTY.md) — party
+// mode stays fully locked (no enable toggle, no relay connection) until this
+// has been called once.
+async function onSkinsPartyAcceptConsent() {
+  try {
+    if (TAURI) {
+      skinsState.party = await TAURI.invoke("skins_party_set_consent", { accepted: true });
+    } else {
+      skinsState.party = { ...DEFAULT_SKINS_STATE.party, consent_ok: true };
+    }
+    toast("Party Mode unlocked", "You can turn it on below whenever you're ready.", "success");
+  } catch (e) {
+    toast("Couldn't save consent", String(e || ""), "danger");
+  }
+  if (currentPage === "skins") refreshPartyCard();
+}
+
+async function onSkinsPartyToggleAutoAnnouncers() {
+  const enabling = !(skinsState.party && skinsState.party.auto_download_peer_announcers);
+  try {
+    if (TAURI) {
+      skinsState.party = await TAURI.invoke("skins_party_set_auto_announcers", { enabled: enabling });
+    } else if (skinsState.party) {
+      skinsState.party.auto_download_peer_announcers = enabling;
+    }
+  } catch (e) {
+    toast("Couldn't save setting", String(e || ""), "danger");
+  }
+  if (currentPage === "skins") refreshPartyCard();
+}
+
+// Revoking consent also force-disables party mode and disconnects
+// immediately (enforced backend-side by skins_party_set_consent) — the
+// toast here just confirms it happened.
+async function onSkinsPartyRevokeConsent() {
+  try {
+    if (TAURI) {
+      skinsState.party = await TAURI.invoke("skins_party_set_consent", { accepted: false });
+    } else {
+      skinsState.party = structuredClone(DEFAULT_SKINS_STATE.party);
+    }
+    toast("Party data-sharing consent revoked", "Party mode disconnected.", "warning");
+  } catch (e) {
+    toast("Couldn't revoke consent", String(e || ""), "danger");
   }
   if (currentPage === "skins") refreshPartyCard();
 }

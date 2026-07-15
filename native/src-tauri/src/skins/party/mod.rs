@@ -4,4 +4,5 @@
 
 pub mod manager;
 pub mod relay;
+pub mod sig;
 pub mod token;

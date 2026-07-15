@@ -40,6 +40,7 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 flate2 = "1"
 sha2 = "0.10"
 rand = "0.8"
+ed25519-dalek = { version = "2", features = ["rand_core"] } # party-mode selection signing (P0-F)
 regex = "1"
 junction = "1"                     # NTFS junctions for the extract-cache (S3)
 indexmap = "2"                     # skin-name map ordering (bridge protocol, S4)

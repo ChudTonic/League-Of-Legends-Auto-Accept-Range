@@ -34,6 +34,10 @@ pub const TOKEN_EXPIRY_SECONDS: u64 = 3600;
 pub struct TokenData {
     pub version: u8,
     pub timestamp: u32,
+    /// Historically a real LCU summoner id. As of P0-F, `party::manager`'s
+    /// `enable()` instead puts a random per-`enable()` EPHEMERAL id here
+    /// (see its doc comment) — this module's wire layout and field name are
+    /// unchanged, only the caller-supplied value's meaning is.
     pub summoner_id: u64,
     pub key: [u8; 32],
 }
