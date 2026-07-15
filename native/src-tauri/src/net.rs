@@ -29,6 +29,11 @@ const BUILT_IN_HOSTS: &[&str] = &[
     "objects.githubusercontent.com",
     "codeload.github.com",
     "release-assets.githubusercontent.com",
+    // Library skin downloads resolve (via the chud-skins Worker's 1:1
+    // catalog) to DIRECT RuneForge R2 artifact URLs — RuneForge hosts the
+    // files, we only host the index + thumbnails.
+    "runeforge.dev",
+    "r2-prod.runeforge.dev",
 ];
 
 /// Build the allowlist of external hosts for this run: the built-ins above,

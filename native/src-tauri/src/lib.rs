@@ -345,6 +345,25 @@ fn save_config(cfg: serde_json::Value, app: AppHandle, state: tauri::State<Arc<A
     }
 }
 
+/// Open an external attribution link (e.g. "View on RuneForge") in the
+/// user's default browser. Locked down: HTTPS only, and only the specific
+/// hosts we surface links to — a webview-supplied URL can't turn this into a
+/// general "launch anything" shell primitive.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "invalid url".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("only https links are allowed".to_string());
+    }
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let allowed = host == "runeforge.dev" || host.ends_with(".runeforge.dev");
+    if !allowed {
+        return Err(format!("host not allowed: {host}"));
+    }
+    winutil::open_in_browser(parsed.as_str());
+    Ok(())
+}
+
 #[tauri::command]
 fn request_admin(app: AppHandle) {
     // Relaunch elevated (UAC), then exit so the elevated instance takes over.
@@ -1512,6 +1531,7 @@ pub fn run() {
             stop_all,
             set_injection_ack,
             request_admin,
+            open_external_url,
             exit_app,
             get_diagnostics,
             get_config,

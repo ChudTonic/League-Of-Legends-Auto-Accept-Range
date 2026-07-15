@@ -51,11 +51,30 @@ pub fn relaunch_as_admin() {
     }
 }
 
+/// Open a URL in the user's default browser via the shell (`ShellExecuteW`
+/// "open"). Used for the "View on RuneForge" attribution link — the caller
+/// must validate the URL first (see `open_external_url` in `lib.rs`).
+#[cfg(windows)]
+pub fn open_in_browser(url: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let mut file: Vec<u16> = std::ffi::OsStr::new(url).encode_wide().collect();
+    file.push(0);
+    unsafe {
+        ShellExecuteW(None, w!("open"), PCWSTR(file.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    }
+}
+
 // Non-Windows fallbacks so the crate still type-checks off-Windows.
 #[cfg(not(windows))]
 pub fn is_admin() -> bool {
     false
 }
+#[cfg(not(windows))]
+pub fn open_in_browser(_url: &str) {}
 #[cfg(not(windows))]
 pub fn lol_game_focused() -> bool {
     false

@@ -1,6 +1,8 @@
 // Chud — Library (skin/mod marketplace). Self-contained; main.js routes the
-// "library" page here via window.renderLibrary(). Catalog comes from the app's
-// own backend (Cloudflare Worker + R2); no upstream source is named in the UI.
+// "library" page here via window.renderLibrary(). The catalog is a 1:1 index
+// of RuneForge's mods (served through Chud's Cloudflare Worker); skin files
+// download directly from RuneForge's R2, and each mod links back to its
+// RuneForge page ("View on RuneForge") for attribution.
 (function () {
   "use strict";
   const S = window.ChudShared;
@@ -54,7 +56,7 @@
       updatedHrs: hoursSince(m.updatedAt), trending: !!m.trending, working: m.working !== false,
       version: "1.0.0", sizeMB: null, modifies: "Base",
       description: m.description || "", video: m.video || null, thumb: m.thumb || null, ready: !!m.ready,
-      chudOriginal: !!m.chudOriginal,
+      chudOriginal: !!m.chudOriginal, view: m.view || null,
     };
   }
 
@@ -350,7 +352,7 @@
         </div>
         <div class="lb-mright">
           <div class="lb-mtitle-row"><div class="lb-mtitle">${esc(m.name)}</div><button class="lb-fav ${isFav ? "on" : ""}" data-fav="${esc(m.id)}" title="Favorite"><svg viewBox="0 0 24 24" width="14" height="14" fill="${isFav ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.8"><path d="M12 20.3S3.5 15.4 2.6 9.9C2 6.6 4.6 4 7.5 4c1.9 0 3.4 1 4.5 2.6C13.1 5 14.6 4 16.5 4c2.9 0 5.5 2.6 4.9 5.9-.9 5.5-9.4 10.4-9.4 10.4z"/></svg></button></div>
-          <div class="lb-mby">by <b>${esc(m.author)}</b>${m.updatedHrs != null ? " · updated " + esc(fmtAgo(m.updatedHrs)) : ""}</div>
+          <div class="lb-mby">by <b>${esc(m.author)}</b>${m.updatedHrs != null ? " · updated " + esc(fmtAgo(m.updatedHrs)) : ""}${m.view ? ` · <a href="#" class="lb-rf" data-view="${esc(m.view)}">View on RuneForge ↗</a>` : ""}</div>
           <div class="lb-mchips"><span class="chip ${m.working ? "lb-chip-ok" : "lb-chip-warn"}"><span class="lb-dot on"></span>${m.working ? "WORKING" : "BROKEN ON PATCH"}</span><span class="chip lb-chip-n">${esc(m.category)}</span></div>
           <div class="lb-mstats"><span>${fmtN(m.views)} views</span><span>↓ ${fmtN(m.installs)}</span><span>♥ ${fmtN(m.likes)}</span></div>
           <div class="lb-maction">${action}<div class="lb-mfoot">Installs straight to Chud. In champ select, click the <b>Custom Mods</b> button and pick it when this champion is up.</div></div>
@@ -401,6 +403,7 @@
       const prev = e.currentTarget.closest(".lb-mpreview");
       if (prev && vid) prev.innerHTML = `<iframe class="lb-vframe" src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(vid)}?autoplay=1&rel=0&modestbranding=1" title="Skin showcase" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>`;
     });
+    on("[data-view]", "onclick", (e) => { e.preventDefault(); e.stopPropagation(); const u = e.currentTarget.dataset.view; if (u) inv("open_external_url", { url: u }).catch(() => {}); });
     on("[data-fav]", "onclick", async (e) => { e.stopPropagation(); const id = e.currentTarget.dataset.fav; const on2 = !st.favs.includes(id); try { const favs = await inv("library_set_favorite", { modId: id, on: on2 }); st.favs = favs || (S.hasBackend ? st.favs : (on2 ? [...st.favs, id] : st.favs.filter((x) => x !== id))); } catch (er) {} paint(); });
     on("[data-install]", "onclick", (e) => { e.stopPropagation(); install(e.currentTarget.dataset.install); });
     on("[data-bundle]", "onclick", (e) => { e.stopPropagation(); installBundle(e.currentTarget.dataset.bundle); });
