@@ -1168,7 +1168,7 @@ async fn scan_downloaded_mod(
     bytes: Vec<u8>,
     label: &str,
 ) -> ScanSummary {
-    use skins::slog::log_warn;
+    use skins::slog::{log_info, log_warn};
 
     let report = match tokio::task::spawn_blocking(move || modscan_core::scan_bytes(&bytes)).await {
         Ok(report) => report,
@@ -1213,8 +1213,20 @@ async fn scan_downloaded_mod(
     let effective = vt_escalation.map(|vt| worse_verdict(report.verdict, vt)).unwrap_or(report.verdict);
     let verdict = verdict_str(effective);
     let n = report.findings.len();
+    // Always log the scan outcome (positive confirmation it ran), not just the
+    // scary cases — a clean scan used to be completely silent, which made
+    // "scanned & clean" indistinguishable from "scanner never ran".
+    let short_sha: String = report.sha256.chars().take(12).collect();
+    let vt_note = vt_json
+        .as_ref()
+        .filter(|v| v.get("known").and_then(|k| k.as_bool()) == Some(true))
+        .and_then(|v| v.get("vt"))
+        .map(|vt| format!(" [VT {}/{} flagged]", vt.get("malicious").and_then(|m| m.as_i64()).unwrap_or(0), vt.get("total").and_then(|t| t.as_i64()).unwrap_or(0)))
+        .unwrap_or_default();
     if effective != modscan_core::Verdict::Clean {
-        log_warn!("[MODSCAN] {label}: {verdict} — {n} finding(s); {}", report.human_summary());
+        log_warn!("[MODSCAN] {label}: {verdict} — {n} finding(s){vt_note}; {}", report.human_summary());
+    } else {
+        log_info!("[MODSCAN] {label}: clean ({} entries, sha {short_sha}){vt_note}", report.entry_count);
     }
 
     let findings: Vec<serde_json::Value> =

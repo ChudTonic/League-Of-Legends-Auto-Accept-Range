@@ -525,7 +525,15 @@
         return;
       }
       st.installed[id] = (r && r.record) || { name: m.name, version: "1.0.0" };
-      toast("Mod installed", `${m.name || "Mod"} — pick it from the Custom Mods button in champ select.`, "success");
+      // Positive scan confirmation: a clean scan is otherwise invisible, which
+      // makes "scanned & clean" look identical to "never scanned". Surface the
+      // verdict on every successful install.
+      const scan = (r && r.scan) || {};
+      const vt = scan.vt && scan.vt.known ? ` · VirusTotal ${((scan.vt.vt || {}).malicious) || 0}/${((scan.vt.vt || {}).total) || 0}` : "";
+      const scanNote = scan.verdict
+        ? (force ? `Installed despite a ${esc(scan.verdict)} ModScan verdict — at your request.` : `🛡 ModScan: clean${vt}. Pick it from the Custom Mods button in champ select.`)
+        : `${m.name || "Mod"} — pick it from the Custom Mods button in champ select.`;
+      toast("Mod installed", scanNote, force ? "warning" : "success");
     } catch (e) {
       clearInterval(iv); delete st.installing[id]; delete st.phase[id];
       toast("Install failed", String(e).slice(0, 120), "danger");
