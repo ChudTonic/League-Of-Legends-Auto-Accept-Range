@@ -747,7 +747,25 @@ impl PartyManager {
                         self.switch_room(room, None, my_name).await;
                     }
                 }
-                _ => {}
+                // Already targeting the right room, but the relay isn't
+                // actually connected (e.g. the first connect failed) -
+                // reconnect so a transient relay outage self-heals instead of
+                // staying "limited" until the next lobby change.
+                _ => {
+                    let connected =
+                        self.inner.lock().unwrap_or_else(|e| e.into_inner()).relay.as_ref().is_some_and(|r| r.connected());
+                    if !connected {
+                        let room = match party_id.as_deref() {
+                            Some(pid) => relay::compute_lobby_room_key(pid),
+                            None => match my_key {
+                                Some(key) => relay::compute_room_key(ephemeral_id, &key),
+                                None => continue,
+                            },
+                        };
+                        log_info!("[PARTY] Relay not connected - reconnecting to room {}", relay::short_key(&room));
+                        self.switch_room(room, party_id, my_name).await;
+                    }
+                }
             }
         }
     }
