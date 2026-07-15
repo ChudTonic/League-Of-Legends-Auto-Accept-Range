@@ -209,11 +209,18 @@ pub struct InstalledMod {
     pub size_mb: f64,
     /// Relative filename in the library mods dir.
     pub file: String,
+    /// ModScan verdict recorded at install/rescan time ("clean"/"suspicious"/
+    /// "malicious", or "" for pre-ModScan installs never rescanned).
+    #[serde(default)]
+    pub scan_verdict: String,
+    /// SHA-256 of the scanned file (for the ModScan status view).
+    #[serde(default)]
+    pub scan_sha: String,
 }
 
 impl Default for InstalledMod {
     fn default() -> Self {
-        Self { name: String::new(), champ: String::new(), version: "1.0.0".into(), size_mb: 0.0, file: String::new() }
+        Self { name: String::new(), champ: String::new(), version: "1.0.0".into(), size_mb: 0.0, file: String::new(), scan_verdict: String::new(), scan_sha: String::new() }
     }
 }
 

@@ -1265,8 +1265,114 @@ pub(crate) async fn place_library_mod(
     let rel_file = rel_dir.join(&file_name).to_string_lossy().replace('\\', "/");
     log_info!("[LIBRARY] installed '{name}' ({size_mb:.1} MB) -> mods/{rel_file}");
 
-    let record = config::InstalledMod { name: name.to_string(), champ: champ.to_string(), version: "1.0.0".into(), size_mb, file: rel_file };
+    let record = config::InstalledMod {
+        name: name.to_string(),
+        champ: champ.to_string(),
+        version: "1.0.0".into(),
+        size_mb,
+        file: rel_file,
+        scan_verdict: summary.verdict.clone(),
+        scan_sha: summary.sha256.clone(),
+    };
     Ok((Some(record), summary))
+}
+
+// ── ModScan panel: on-demand scanning of installed mods + the mods folder ──
+
+/// Structural-only ScanSummary (no VirusTotal lookup) — used by the folder
+/// sweep, which would otherwise fire one reputation request per file.
+fn structural_summary(report: modscan_core::ScanReport) -> ScanSummary {
+    let blocking = report.verdict != modscan_core::Verdict::Clean;
+    let findings = report.findings.iter().map(|f| serde_json::to_value(f).unwrap_or_else(|_| json!({}))).collect();
+    ScanSummary { verdict: verdict_str(report.verdict).to_string(), sha256: report.sha256, blocking, findings, vt: None }
+}
+
+/// Every `.fantome`/`.zip` under `dir`, recursively.
+fn collect_mod_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("fantome") || e.eq_ignore_ascii_case("zip")) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Re-scan one installed Library mod on disk (structural + VirusTotal) and
+/// persist the fresh verdict onto its install record.
+#[tauri::command]
+async fn modscan_rescan(mod_id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let (rel_file, name, endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        let rec = c.library.installed.get(&mod_id).ok_or("mod not installed")?;
+        (rec.file.clone(), rec.name.clone(), c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let path = skins::paths::mods_dir().join(&rel_file);
+    let bytes = tokio::fs::read(&path).await.map_err(|e| format!("can't read {}: {e}", path.display()))?;
+    let http = net::build_external_client(20.0, allowed.clone());
+    let summary = scan_downloaded_mod(endpoint.trim_end_matches('/'), &allowed, &http, Arc::new(bytes), &name).await;
+    {
+        let mut c = state.config.lock_safe();
+        if let Some(rec) = c.library.installed.get_mut(&mod_id) {
+            rec.scan_verdict = summary.verdict.clone();
+            rec.scan_sha = summary.sha256.clone();
+        }
+        let _ = c.save();
+    }
+    serde_json::to_value(&summary).map_err(|e| e.to_string())
+}
+
+/// Manual scan of an arbitrary file (drag/drop or file picker) — structural +
+/// VirusTotal.
+#[tauri::command]
+async fn modscan_scan_path(path: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("not a file".to_string());
+    }
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
+    let http = net::build_external_client(20.0, allowed.clone());
+    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let summary = scan_downloaded_mod(endpoint.trim_end_matches('/'), &allowed, &http, Arc::new(bytes), &name).await;
+    serde_json::to_value(json!({ "file": path, "name": name, "scan": summary })).map_err(|e| e.to_string())
+}
+
+/// Sweep every mod archive under the mods folder (structural only, so a big
+/// folder stays responsive). Returns a per-file verdict list.
+#[tauri::command]
+async fn modscan_scan_folder() -> Result<serde_json::Value, String> {
+    let mods_dir = skins::paths::mods_dir();
+    let files = tokio::task::spawn_blocking(move || collect_mod_files(&mods_dir)).await.map_err(|e| e.to_string())?;
+    let mut results = Vec::with_capacity(files.len());
+    let (mut clean, mut flagged) = (0u32, 0u32);
+    for path in files {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file_str = path.to_string_lossy().into_owned();
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                let report = tokio::task::spawn_blocking(move || modscan_core::scan_bytes(&bytes)).await.map_err(|e| e.to_string())?;
+                let summary = structural_summary(report);
+                if summary.verdict == "clean" { clean += 1; } else { flagged += 1; }
+                results.push(json!({ "file": file_str, "name": name, "verdict": summary.verdict, "findings": summary.findings, "sha256": summary.sha256 }));
+            }
+            Err(e) => {
+                flagged += 1;
+                results.push(json!({ "file": file_str, "name": name, "verdict": "error", "error": e.to_string() }));
+            }
+        }
+    }
+    Ok(json!({ "total": results.len(), "clean": clean, "flagged": flagged, "results": results }))
 }
 
 /// Announcer Studio: return the assignable slot list (key/category/label/
@@ -1655,6 +1761,9 @@ pub fn run() {
             library_remove,
             library_bundles,
             library_install_bundle,
+            modscan_rescan,
+            modscan_scan_path,
+            modscan_scan_folder,
             announcer_studio_slots,
             announcer_studio_build,
             updater_check,
