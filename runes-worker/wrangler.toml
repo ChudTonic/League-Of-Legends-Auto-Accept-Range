@@ -1,6 +1,0 @@
-name = "chud-runes"
-main = "src/index.js"
-compatibility_date = "2025-01-01"
-
-# Deploys to https://chud-runes.<your-subdomain>.workers.dev
-# Endpoint used by Chud: https://chud-runes.<your-subdomain>.workers.dev/runes

@@ -5,22 +5,14 @@
 /*
 !/native/
 !/docs/
-!/relay-worker/
-!/runes-worker/
-!/skins-worker/
 !/tools/
 !/README.md
 !/.gitignore
 !/.gitattributes
 
-# Relay worker build output (wasm + wrangler artifacts)
-relay-worker/target/
-relay-worker/build/
-relay-worker/.wrangler/
-
-# Runes worker (JS) local-only artifacts
-runes-worker/node_modules/
-runes-worker/.wrangler/
+# Cloudflare Workers (relay/runes/skins) are deploy-side infrastructure —
+# end users never build or run them, so they stay local-only (deployed via
+# wrangler, not git). Covered by the root /* ignore above.
 
 # ── Inside native/: build output + local-only files ──
 native/target/
