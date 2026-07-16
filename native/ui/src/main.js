@@ -518,6 +518,28 @@ function skinsRiskStrip() {
   </div>`;
 }
 
+// P0-2: prominent one-time setup gate when cslol-dll.dll is missing/invalid —
+// skins can't work without it, so surface it as an action, not a buried row.
+function dllGate() {
+  const d = (skinsState && skinsState.diagnostics) || {};
+  if (d.dllValid) return "";
+  const reason = d.dllReason === "mismatch"
+    ? "The <code>cslol-dll.dll</code> in your folder isn't a recognized version."
+    : d.dllReason === "unreadable"
+    ? "Chud couldn't read <code>cslol-dll.dll</code> — it may be locked or lack permissions."
+    : "Skins need one file Chud can't ship for legal reasons: <code>cslol-dll.dll</code>.";
+  const dir = esc(d.cslolDir || "%LOCALAPPDATA%\\\\Chud\\\\cslol-tools");
+  return `<div class="glass" style="border:1px solid rgba(230,162,60,0.5)">
+    <div class="set-card-title" style="color:#e6a23c"><span class="ci">${ico("warning")}</span>One-time skin setup needed</div>
+    <div class="dim" style="font-size:12.5px;line-height:1.6;margin-top:6px">${reason} Drop your own copy into this folder, then Re-check — it survives every update.</div>
+    <div class="mono" style="font-size:11px;color:#7ceeff;margin-top:8px;word-break:break-all">${dir}</div>
+    <div class="row" style="gap:10px;margin-top:12px">
+      <button class="btn sm primary" id="dllOpenBtn">Open folder</button>
+      <button class="btn sm" id="dllRecheckBtn">Re-check</button>
+    </div>
+  </div>`;
+}
+
 function skinsStatusRow(label, ok, okText, badText) {
   const c = toneColor(ok ? "success" : "danger");
   return `<div class="diag-row"><span class="diag-k">${esc(label)}</span><span class="diag-v" style="color:${c}">${esc(ok ? okText : badText)}</span></div>`;
@@ -785,6 +807,7 @@ async function renderSkins() {
   if (currentPage !== "skins") return; // navigated away while the await above was in flight
   p.innerHTML = `<div class="set-wrap">
     ${skinsAck ? "" : skinsRiskStrip()}
+    ${dllGate()}
     <div class="glass" style="display:flex;align-items:center;gap:16px">
       <div class="grow">
         <div class="set-card-title" style="margin-bottom:2px"><span class="ci">${ico("skin")}</span>Skin Injection</div>
@@ -805,6 +828,10 @@ async function renderSkins() {
 }
 
 function wireSkins() {
+  const dllOpen = document.getElementById("dllOpenBtn");
+  if (dllOpen) dllOpen.onclick = () => invoke("skins_open_cslol_dir").catch(() => {});
+  const dllRecheck = document.getElementById("dllRecheckBtn");
+  if (dllRecheck) dllRecheck.onclick = async () => { await loadSkinsState(); renderSkins(); };
   const ack = document.getElementById("skinsAckBtn");
   if (ack) ack.onclick = async () => {
     // Backend-persisted, versioned consent — the safety policy gates every

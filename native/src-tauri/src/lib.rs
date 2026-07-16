@@ -446,16 +446,27 @@ struct SkinsStatusChecks {
     hashes_ready: bool,
     tools_available: bool,
     dll_valid: bool,
+    /// Why the DLL is invalid, for the setup gate: "" (ok) / "missing" /
+    /// "mismatch" / "unreadable".
+    dll_reason: &'static str,
 }
 
 fn skins_status_checks() -> SkinsStatusChecks {
+    use skins::injection::tools::DllVerifyError;
     let tools_dir = skins::injection::tools::cslol_tools_dir();
+    let dll = skins::injection::tools::verify_cslol_dll(&tools_dir);
     SkinsStatusChecks {
         pengu_active: skins::pengu::is_active(),
         skins_downloaded: skins::downloads::skins_present(&skins::paths::skins_dir()),
         hashes_ready: tools_dir.join("hashes.game.txt").exists(),
         tools_available: skins::injection::tools::check_tools_available(&tools_dir),
-        dll_valid: skins::injection::tools::verify_cslol_dll(&tools_dir).is_ok(),
+        dll_valid: dll.is_ok(),
+        dll_reason: match dll {
+            Ok(()) => "",
+            Err(DllVerifyError::Missing) => "missing",
+            Err(DllVerifyError::HashMismatch) => "mismatch",
+            Err(DllVerifyError::Unreadable) => "unreadable",
+        },
     }
 }
 
@@ -465,10 +476,22 @@ fn skins_diagnostics_value(checks: &SkinsStatusChecks, bridge_port: Option<u16>)
         "penguActive": checks.pengu_active,
         "toolsAvailable": checks.tools_available,
         "dllValid": checks.dll_valid,
+        "dllReason": checks.dll_reason,
+        "cslolDir": skins::injection::tools::cslol_tools_dir().to_string_lossy(),
         "skinsDownloaded": checks.skins_downloaded,
         "hashesReady": checks.hashes_ready,
         "dataDir": skins::paths::data_root().to_string_lossy(),
     })
+}
+
+/// Open the cslol-tools folder (where the user drops `cslol-dll.dll`) in
+/// Explorer — the setup gate's "Open folder" action.
+#[tauri::command]
+fn skins_open_cslol_dir() -> Result<(), String> {
+    let dir = skins::injection::tools::cslol_tools_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    winutil::open_in_browser(&dir.to_string_lossy());
+    Ok(())
 }
 
 /// Current injection-policy decision as UI JSON (`{allowed, code, message}`).
@@ -854,6 +877,44 @@ fn skins_party_set_auto_announcers(enabled: bool, state: tauri::State<Arc<AppSta
 /// current-patch best build for it — once per champion. Idles cheaply
 /// otherwise. Self-contained: touches only the runes config + LCU, never the
 /// auto-accept/skins subsystems.
+/// P0-3: keep game hashes current. A Riot patch changes WAD layouts, and a
+/// stale `hashes.game.txt` makes cslol's overlay build go pathological (the
+/// 17GB / crash-repair-loop failure). `ensure_hashes` self-idles when nothing
+/// changed (SHA check), so this is cheap on a no-patch launch and only pulls
+/// the changed shards after a patch. Only REFRESHES an existing hash file —
+/// the first-time 207MB download stays user-initiated (with its progress UI).
+fn spawn_hash_autorefresh(app: AppHandle, state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        if !state.config.lock_safe().skins.enabled {
+            return;
+        }
+        let tools_dir = skins::injection::tools::cslol_tools_dir();
+        if !tools_dir.join("hashes.game.txt").exists() {
+            return; // no existing hashes to refresh
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await; // let the app settle
+        if !state.config.lock_safe().skins.enabled {
+            return;
+        }
+        let mut noop = |_done: u64, _total: Option<u64>| {};
+        match skins::downloads::ensure_hashes(&tools_dir, &mut noop).await {
+            Ok(true) => {
+                eprintln!("[hashes] refreshed after a game patch");
+                let _ = app.emit(
+                    "notification",
+                    json!({
+                        "title": "League updated",
+                        "message": "Refreshed skin data for the new patch. Some custom skins may not work until their authors update them.",
+                        "tone": "info"
+                    }),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("[hashes] auto-refresh failed (non-fatal): {e}"),
+        }
+    });
+}
+
 fn spawn_runes_auto_import(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         // LCU-only client. The Worker fetch below gets its OWN external client —
@@ -1734,6 +1795,7 @@ pub fn run() {
             skins_get_state,
             skins_save_settings,
             skins_set_ack,
+            skins_open_cslol_dir,
             skins_download,
             skins_activate_pengu,
             skins_set_enabled,
@@ -1783,6 +1845,7 @@ pub fn run() {
             // endpoint is configured).
             spawn_runes_auto_import(st.clone());
             spawn_appear_offline(st.clone());
+            spawn_hash_autorefresh(handle.clone(), st.clone());
 
             // Auto-update: silently check GitHub Releases for a signed newer
             // version and surface the pill. Best-effort: any failure just logs
