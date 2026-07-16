@@ -4,6 +4,29 @@
  * @description Interface unlocker for Pengu Loader
  * @link https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range
  */
+// Suppress the loader's OWN built-in welcome popup. Chud ships its own welcome
+// (below), so the loader's default first-run dialog is redundant and stacks on
+// top of ours on a fresh install. This uses the loader's OWN documented path —
+// it shows the welcome when DataStore.get("pengu-welcome", true) !== false, so
+// persisting false dismisses it cleanly (no DOM manipulation). Idempotent, and
+// retries briefly in case DataStore isn't wired up the instant this evaluates.
+(function suppressLoaderWelcome() {
+  const apply = () => {
+    try {
+      if (window.DataStore && typeof window.DataStore.set === "function") {
+        window.DataStore.set("pengu-welcome", false);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+  if (apply()) return;
+  let tries = 0;
+  const t = setInterval(() => {
+    if (apply() || ++tries > 100) clearInterval(t);
+  }, 50);
+})();
+
 (function enableLockedSkinPreview() {
   const LOG_PREFIX = "[Chud-UI][skin-preview]";
   const INLINE_ID = "lpp-ui-unlock-skins-css-inline";

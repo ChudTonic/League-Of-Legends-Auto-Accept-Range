@@ -290,6 +290,21 @@ impl Default for Party {
     }
 }
 
+/// Anonymous usage telemetry. ON by default. Sends only a per-UTC-day rotating
+/// random id + coarse version (no accounts, no IPs stored server-side, no game
+/// data). See `telemetry-worker/SPEC.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Telemetry {
+    pub enabled: bool,
+}
+
+impl Default for Telemetry {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -304,6 +319,7 @@ pub struct Config {
     pub library: Library,
     pub network: Network,
     pub party: Party,
+    pub telemetry: Telemetry,
 }
 
 /// Per-user config file path: `%APPDATA%/LeagueOfLegendsTools/config.json`.

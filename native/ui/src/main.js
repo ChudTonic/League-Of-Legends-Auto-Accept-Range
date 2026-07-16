@@ -313,6 +313,9 @@ function settingsHtml() {
   ${card("Presence", "profile", [
     setField("Appear offline", "Hide from your friends list while you play. Chud sets your chat status to offline and keeps re-asserting it (the client otherwise resets it). Applies instantly.", `<div class="tog ${appearOffline ? "on" : ""}" id="appearOfflineTog"><div class="knob"></div></div>`),
   ].join(""))}
+  ${card("Privacy", "shield", [
+    setField("Anonymous usage stats", "Sends only a daily-rotating random number + app version so we can see how many people use Chud. No account, no IP, no game data — it can't identify you or track you across days. On by default; turn it off here.", togCtl("telemetry", "enabled")),
+  ].join(""))}
   ${card("Beta features", "bolt", [
     setField("Skin Library", "Enable the in-app skin browser (work in progress). Adds a Skin Library tab to browse and install community skins.", `<div class="tog ${libraryEnabled ? "on" : ""}" id="libraryBetaTog"><div class="knob"></div></div>`),
   ].join(""))}

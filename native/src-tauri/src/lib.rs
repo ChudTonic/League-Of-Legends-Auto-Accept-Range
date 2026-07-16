@@ -17,6 +17,7 @@ mod safety;
 mod safety_manager;
 mod skins;
 mod stats;
+mod telemetry;
 mod winutil;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1846,6 +1847,8 @@ pub fn run() {
             spawn_runes_auto_import(st.clone());
             spawn_appear_offline(st.clone());
             spawn_hash_autorefresh(handle.clone(), st.clone());
+            // Anonymous usage heartbeat — no-ops until `telemetry.enabled` (dark).
+            telemetry::spawn(handle.clone());
 
             // Auto-update: silently check GitHub Releases for a signed newer
             // version and surface the pill. Best-effort: any failure just logs

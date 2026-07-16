@@ -53,3 +53,6 @@ native/src-tauri/resources/pengu-loader/*.log
 
 # Local handoff doc — contains secrets, never commit
 CHUD-HANDOFF.md
+
+# Telemetry worker + admin dashboard — never goes to GitHub
+telemetry-worker/
