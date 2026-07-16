@@ -66,7 +66,7 @@ impl SkinInjector {
         champion_name: Option<&str>,
         champion_id: Option<i64>,
         extra_mod_names: &[String],
-    ) -> Result<bool, String> {
+    ) -> Result<i32, String> {
         let injection_start = Instant::now();
 
         // Strip a trailing numeric skin ID for chroma path construction.
@@ -77,7 +77,7 @@ impl SkinInjector {
         else {
             log_error!("[INJECT] Skin '{skin_name}' not found in {}", self.zips_dir.display());
             log_available_skins(&self.zips_dir);
-            return Ok(false);
+            return Ok(overlay::CODE_SKIN_NOT_FOUND);
         };
 
         log_info!("[INJECT] Using skin file: {}", zp.display());
@@ -125,11 +125,10 @@ impl SkinInjector {
         let total_duration = injection_start.elapsed().as_secs_f64();
         if result == 0 {
             log_info!("[INJECT] Completed in {total_duration:.2}s");
-            Ok(true)
         } else {
-            log_warn!("[INJECT] Failed - timeout or error after {total_duration:.2}s");
-            Ok(false)
+            log_warn!("[INJECT] Failed (code {result}) after {total_duration:.2}s");
         }
+        Ok(result)
     }
 
     /// Build the overlay from ALREADY-STAGED mods only, with no primary
@@ -137,9 +136,9 @@ impl SkinInjector {
     /// owes the overlay their party teammates' skins. The caller must have
     /// staged `mod_names` into `mods_dir` already; this never
     /// resolves/extracts a primary skin and never cleans the mods dir.
-    pub fn inject_mods_only(&self, game_monitor: &mut GameMonitor, mod_names: &[String]) -> Result<bool, String> {
+    pub fn inject_mods_only(&self, game_monitor: &mut GameMonitor, mod_names: &[String]) -> Result<i32, String> {
         if mod_names.is_empty() {
-            return Ok(false);
+            return Ok(overlay::CODE_SKIN_NOT_FOUND);
         }
         let injection_start = Instant::now();
         storage::clean_overlay_dir(&self.overlay_dir);
@@ -161,11 +160,10 @@ impl SkinInjector {
         let total_duration = injection_start.elapsed().as_secs_f64();
         if result == 0 {
             log_info!("[INJECT] Mods-only completed in {total_duration:.2}s");
-            Ok(true)
         } else {
-            log_warn!("[INJECT] Mods-only failed - timeout or error after {total_duration:.2}s");
-            Ok(false)
+            log_warn!("[INJECT] Mods-only failed (code {result}) after {total_duration:.2}s");
         }
+        Ok(result)
     }
 
     /// Clean the injection system (ported from `SkinInjector.clean_system`).

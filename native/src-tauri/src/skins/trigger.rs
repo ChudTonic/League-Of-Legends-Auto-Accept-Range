@@ -562,6 +562,7 @@ async fn run_custom_mod_injection(
     spawn_game_end_watcher(skins.clone(), injection.clone());
 
     let injection = injection.clone();
+    let app = app.clone();
     let ticker_champion_name = champion_name;
     tauri::async_runtime::spawn_blocking(move || {
         // With a base skin -> normal inject (resolves + extracts primary,
@@ -585,11 +586,9 @@ async fn run_custom_mod_injection(
             log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
             log_error!("CUSTOM MOD INJECTION FAILED");
             log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
+            notify_injection_failed(&app, &injection, &ticker_champion_name);
         }
     });
-    // `app` is reserved for a later milestone (S9 event emission on
-    // injection completion); not read yet.
-    let _ = app;
 }
 
 // ---------------------------------------------------------------------
@@ -605,8 +604,6 @@ fn spawn_owned_injection(
     champion_id: Option<i64>,
     party_folders: Vec<String>,
 ) {
-    // `app` is reserved for a later milestone (S9 event emission); not read yet.
-    let _ = &app;
     spawn_game_end_watcher(skins, injection.clone());
     tauri::async_runtime::spawn_blocking(move || {
         // Your own owned skin shows natively; `party_folders` are the peer
@@ -616,6 +613,7 @@ fn spawn_owned_injection(
             log_info!("[INJECT] Owned-skin overlay build completed");
         } else {
             log_warn!("[INJECT] Owned-skin overlay build failed or was skipped");
+            notify_injection_failed(&app, &injection, &champion_name);
         }
     });
 }
@@ -682,9 +680,8 @@ async fn inject_unowned_skin(
             log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
             log_error!("INJECTION FAILED >>> {} <<<", name.to_uppercase());
             log_error!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
+            notify_injection_failed(&app, &injection, &champion_name);
         }
-        // `app` is reserved for a later milestone (S9 event emission); not read yet.
-        let _ = &app;
     });
 }
 
@@ -695,6 +692,18 @@ fn parse_injected_id(name: &str) -> Option<i64> {
 /// P0-A: evaluate the safety policy for `op`. On denial: log it, push the
 /// typed code to the UI (`injection-denied` event — the Skins page shows the
 /// backend reason verbatim), and return it so the caller aborts.
+/// Surface a REAL injection failure to the user (P0-1). Reads the reason the
+/// injector recorded; `None` = success or a benign skip, so nothing is shown.
+fn notify_injection_failed(app: &AppHandle, injection: &InjectionManager, label: &str) {
+    if let Some(reason) = injection.take_injection_error() {
+        let label = if label.trim().is_empty() { "Your skin" } else { label };
+        let _ = app.emit(
+            "notification",
+            serde_json::json!({ "title": "Skin didn't apply", "message": format!("{label} — {reason}."), "tone": "danger" }),
+        );
+    }
+}
+
 fn policy_denied(app: &AppHandle, op: InjectionOp) -> Option<InjectionDenial> {
     let app_state = app.state::<Arc<AppState>>();
     match safety_manager::evaluate_injection_policy(&app_state, op) {

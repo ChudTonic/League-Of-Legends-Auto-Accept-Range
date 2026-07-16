@@ -58,6 +58,11 @@ pub struct InjectionManager {
     /// Safety policy hook (P0-A) — consulted immediately before every gated
     /// operation. `None` (never wired) FAILS CLOSED: all injection denied.
     policy: Mutex<Option<PolicyHook>>,
+    /// Reason the last injection attempt failed for a REAL reason (build
+    /// error, missing tool, blocked) — `None` on success or a benign skip
+    /// (base skin, cooldown). The trigger reads it after each attempt to
+    /// surface a clear "skin didn't apply" toast instead of failing silently.
+    injection_error: Mutex<Option<String>>,
     inner: Mutex<Inner>,
 }
 
@@ -79,6 +84,7 @@ impl InjectionManager {
             game_dir: Mutex::new(None),
             injection_in_progress: AtomicBool::new(false),
             policy: Mutex::new(None),
+            injection_error: Mutex::new(None),
             inner: Mutex::new(Inner {
                 injector: None,
                 game_monitor: GameMonitor::new(),
@@ -129,6 +135,17 @@ impl InjectionManager {
     /// policy view; the internal fast pre-check uses the atomic directly).
     pub fn injection_in_progress(&self) -> bool {
         self.injection_in_progress.load(Ordering::SeqCst)
+    }
+
+    fn set_error(&self, msg: Option<String>) {
+        *self.injection_error.lock().unwrap_or_else(|e| e.into_inner()) = msg;
+    }
+
+    /// Take (and clear) the reason the last injection really failed, if any.
+    /// `None` = success or a benign skip. Read by the trigger to toast a
+    /// clear "skin didn't apply — <reason>".
+    pub fn take_injection_error(&self) -> Option<String> {
+        self.injection_error.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     /// Initialize the injector lazily when first needed (ported from
@@ -212,6 +229,7 @@ impl InjectionManager {
         champion_id: Option<i64>,
         extra_mod_names: &[String],
     ) -> bool {
+        self.set_error(None); // clear stale reason; benign skips below stay silent
         // Base-skin short-circuit (`skin_{id}` where `id == 0` or `champion_id
         // * 1000`): nothing to overlay on your own base skin. BUT a custom
         // mod or party mods in `extra_mod_names` must still inject OVER the
@@ -293,6 +311,7 @@ impl InjectionManager {
     /// a party peer who picked no skin but must still see teammates' party
     /// skins — previously this dropped ALL party skins for such a peer.
     pub fn inject_mods_only_immediately(&self, mod_names: &[String]) -> bool {
+        self.set_error(None);
         if mod_names.is_empty() {
             return false;
         }
@@ -365,10 +384,15 @@ impl InjectionManager {
         let Some(injector) = inner.injector.as_ref() else { return false };
         let result = injector.inject_mods_only(&mut inner.game_monitor, mod_names);
 
-        let success = matches!(result, Ok(true));
-        if let Err(e) = &result {
-            log_error!("[INJECT] inject_mods_only error: {e}");
-        }
+        let code = match &result {
+            Ok(c) => *c,
+            Err(e) => {
+                log_error!("[INJECT] inject_mods_only error: {e}");
+                1
+            }
+        };
+        self.set_error(overlay::code_reason(code).map(str::to_string));
+        let success = code == 0;
         if success {
             inner.last_skin_name = Some("<party-mods-only>".to_string());
             inner.last_injection_time = Some(now);
@@ -392,6 +416,7 @@ impl InjectionManager {
         if !inner.initialized || inner.injector.is_none() {
             log_error!("[INJECT] Cannot inject - League game directory not found");
             log_error!("[INJECT] Please ensure League Client is running or manually set the path in config.ini");
+            self.set_error(Some("the League game folder wasn't found (is the client running?)".to_string()));
             return false;
         }
 
@@ -401,7 +426,7 @@ impl InjectionManager {
             if elapsed < inner.injection_threshold {
                 let remaining = inner.injection_threshold - elapsed;
                 log_info!("[INJECT] Skipping immediate injection for '{skin_name}' (cooldown {remaining:.2}s remaining)");
-                return false;
+                return false; // benign cooldown skip - no error toast
             }
         }
 
@@ -415,10 +440,15 @@ impl InjectionManager {
         let result =
             injector.inject_skin(skin_name, &mut inner.game_monitor, chroma_id, champion_name, champion_id, extra_mod_names);
 
-        let success = matches!(result, Ok(true));
-        if let Err(e) = &result {
-            log_error!("[INJECT] inject_skin error: {e}");
-        }
+        let code = match &result {
+            Ok(c) => *c,
+            Err(e) => {
+                log_error!("[INJECT] inject_skin error: {e}");
+                1
+            }
+        };
+        self.set_error(overlay::code_reason(code).map(str::to_string));
+        let success = code == 0;
         if success {
             inner.last_skin_name = Some(skin_name.to_string());
             inner.last_injection_time = Some(now);

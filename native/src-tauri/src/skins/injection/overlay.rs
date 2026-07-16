@@ -59,6 +59,25 @@ const OVERLAY_SIZE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// safe — that's cslol's normal hook window.
 const MAX_LATE_HOOK_AGE: Duration = Duration::from_secs(8);
 
+/// Injector-level sentinel (not from mkoverlay): the skin's `.fantome` wasn't
+/// found on disk / no mods staged. Distinct from the overlay codes below.
+pub const CODE_SKIN_NOT_FOUND: i32 = 2;
+
+/// Map an injection result code to a short user-facing reason, or `None` for
+/// success (`0`). Used to turn a silent skin-didn't-apply into a clear toast.
+pub fn code_reason(code: i32) -> Option<&'static str> {
+    match code {
+        0 => None,
+        CODE_SKIN_NOT_FOUND => Some("the skin files aren't downloaded yet"),
+        123 => Some("it was blocked by the safety policy (ranked, consent, or wrong phase)"),
+        124 => Some("the overlay build timed out"),
+        125 => Some("the game started before the overlay finished building"),
+        126 => Some("the game loaded too fast to hook safely — try again"),
+        127 => Some("the mod-tools helper is missing (check the Skins setup)"),
+        _ => Some("the overlay build failed"),
+    }
+}
+
 /// How the mkoverlay wait loop ended.
 enum BuildWait {
     Exited(std::process::ExitStatus),
