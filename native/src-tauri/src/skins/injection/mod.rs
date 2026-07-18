@@ -474,6 +474,11 @@ impl InjectionManager {
         }
     }
 
+    /// LCU-independent game-liveness signal for the game-end watcher.
+    pub fn game_process_running(&self) -> bool {
+        crate::skins::injection::game_monitor::game_process_running()
+    }
+
     /// Clean the injection system (ported from `InjectionManager.clean_system`).
     pub fn clean_system(&self) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());

@@ -592,7 +592,19 @@ async fn run_custom_mod_injection(
                 let shared = skins.shared.lock_safe();
                 (shared.local_cell_id, shared.random_mode_active)
             };
-            force_base_skin(&client, &auth, local_cell, cid * 1000, random_active).await;
+            // Load the slot the overlay's assets are actually keyed to. A
+            // community custom mod built on a NON-base skin (e.g. an enhanced
+            // Primordian Aatrox) keys its WAD chunks to that skin's slot, so
+            // forcing base (cid*1000) makes the game request vanilla-base
+            // chunks and the mod never renders — the "always redirects to the
+            // base skin" report. Force the mod's own target skin in that case;
+            // base-slot overlays and the unowned-base-ZIP path stay on base.
+            let force_skin_id = if has_custom_skin_folder && custom_mod.skin_id % 1000 != 0 {
+                custom_mod.skin_id
+            } else {
+                cid * 1000
+            };
+            force_base_skin(&client, &auth, local_cell, force_skin_id, random_active).await;
         }
     }
     log_info!("[INJECT] Injecting mods: {}", labels.join(", "));
@@ -872,22 +884,38 @@ async fn force_base_skin(
 fn spawn_game_end_watcher(skins: Arc<SkinsState>, injection: Arc<InjectionManager>) {
     tauri::async_runtime::spawn(async move {
         let mut has_been_in_progress = false;
+        let mut has_seen_game = false;
+        let mut ticks: u32 = 0;
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            ticks += 1;
+
             let phase = skins.shared.lock_safe().phase.clone();
-            match phase.as_deref() {
-                Some("InProgress") => has_been_in_progress = true,
-                Some("Reconnect") | Some("GameStart") => {}
-                _ if has_been_in_progress => {
-                    // OS-level reset, NOT `kill_all_runoverlay_processes` — the
-                    // latter locks the injection mutex this game's babysit loop
-                    // still holds, self-deadlocking exactly when a runoverlay
-                    // failed to self-exit. `reset_stuck_injection` kills by OS
-                    // enumeration with no lock instead.
-                    injection.reset_stuck_injection();
-                    break;
-                }
-                _ => {}
+            if matches!(phase.as_deref(), Some("InProgress")) {
+                has_been_in_progress = true;
+            }
+            let phase_ended = has_been_in_progress
+                && !matches!(phase.as_deref(), Some("InProgress") | Some("Reconnect") | Some("GameStart"));
+
+            // Second, LCU-independent signal: the phase freezes at InProgress if
+            // the client closes mid-game, so watch the game process too — this
+            // is what stops runoverlay leaking for hours.
+            let game_running = injection.game_process_running();
+            if game_running {
+                has_seen_game = true;
+            }
+            let game_exited = has_seen_game && !game_running;
+
+            if phase_ended || game_exited {
+                // OS-enumeration kill, no lock; kill_all_runoverlay_processes
+                // would deadlock on the mutex this game's babysit loop holds.
+                injection.reset_stuck_injection();
+                break;
+            }
+
+            // Dodge backstop: neither signal fires if no game ever launched.
+            if ticks >= 3600 {
+                break;
             }
         }
     });

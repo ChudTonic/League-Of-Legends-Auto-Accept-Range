@@ -154,6 +154,15 @@ impl MonitorState {
     }
 }
 
+/// True if `League of Legends.exe` is running. LCU-independent, so the
+/// game-end watcher sees a game exit even when the client is closed — the gap
+/// that leaked `runoverlay` for hours (phase froze at `InProgress`).
+pub fn game_process_running() -> bool {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.processes().values().any(|p| p.name().to_string_lossy().to_lowercase() == GAME_EXE_NAME)
+}
+
 /// Monitors and controls `League of Legends.exe` suspension. Public methods
 /// keep the `&mut self` shape the injection pipeline calls against; the shared
 /// state lets the background watcher thread coordinate with them.
