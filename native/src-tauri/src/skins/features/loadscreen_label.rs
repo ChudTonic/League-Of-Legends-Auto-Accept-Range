@@ -25,6 +25,9 @@ const CARD_W: u32 = 308;
 const CARD_H: u32 = 560;
 /// Folder name of the generated overlay mod (single-slot; rebuilt each pick).
 pub const MOD_NAME: &str = "chud_loadscreen";
+/// cslol mod manifest — mkoverlay rejects a mod folder without `META/info.json`.
+const MOD_INFO_JSON: &str =
+    r#"{"Author":"Chud","Description":"Loadscreen skin-name label","Name":"Chud Loadscreen","Version":"1.0.0"}"#;
 
 /// Riot's actual League display font — the same "Beaufort for LOL" bold used for
 /// champion/skin names in-client, so the baked card matches the game's own type.
@@ -231,8 +234,20 @@ pub async fn build(
     // Owned skins load the skin-numbered loadscreen; an unowned skin is forced
     // to the base slot (its `.fantome` swaps the art), so the game may request
     // the base path instead — write both, de-duped (base skins only have one).
-    let wad_root = crate::skins::paths::injection_mods_dir()
-        .join(MOD_NAME)
+    let mod_root = crate::skins::paths::injection_mods_dir().join(MOD_NAME);
+    // mkoverlay rejects a mod folder without a META/info.json ("Not valid mod!",
+    // exit 1) — which fails the WHOLE overlay build, dropping the real skin back
+    // to base. Write the manifest before the WAD payload.
+    let meta_dir = mod_root.join("META");
+    if let Err(e) = std::fs::create_dir_all(&meta_dir) {
+        log_warn!("[LOADSCREEN] META mkdir failed for {}: {e}", meta_dir.display());
+        return None;
+    }
+    if let Err(e) = std::fs::write(meta_dir.join("info.json"), MOD_INFO_JSON) {
+        log_warn!("[LOADSCREEN] META/info.json write failed: {e}");
+        return None;
+    }
+    let wad_root = mod_root
         .join("WAD")
         .join(format!("{champ_alias}.wad.client"));
     let base_tex = base_tex_path(champ_key);
