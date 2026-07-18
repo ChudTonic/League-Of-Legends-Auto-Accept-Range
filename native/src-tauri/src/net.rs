@@ -27,6 +27,9 @@ const BUILT_IN_HOSTS: &[&str] = &[
     // RuneForge hosts the files, we only host the index + thumbnails.
     "runeforge.dev",
     "r2-prod.runeforge.dev",
+    // Loadscreen name-card source: the game's per-skin loadscreen PNGs (used by
+    // the "skin name on loading screen" feature, baked into a .tex overlay).
+    "raw.communitydragon.org",
 ];
 
 /// Allowlist for this run: built-ins plus hosts from configured Worker/relay

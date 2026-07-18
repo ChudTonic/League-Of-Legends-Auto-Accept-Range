@@ -6,5 +6,6 @@
 
 pub mod chroma;
 pub mod historic;
+pub mod loadscreen_label;
 pub mod random;
 pub mod special;

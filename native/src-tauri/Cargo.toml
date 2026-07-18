@@ -33,7 +33,9 @@ base64 = "0.22"
 directories = "5"
 # Auto-Range injection (M2) — direct Win32 SendInput in input.rs
 rdev = "0.5"                       # global key listener for chat-aware release
-image = "0.25.6"                    # decode the bundled tray icon
+image = "0.25.6"                    # decode the bundled tray icon + loadscreen card compositing
+image_dds = "0.7"                   # BC1 encode for generated loadscreen .tex mods (skin-name card)
+ab_glyph = "0.2"                    # font rasterizer for the loadscreen name text
 # Skins subsystem (S1+) — injection pipeline, Pengu bridge, party mode.
 zip = "2"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
