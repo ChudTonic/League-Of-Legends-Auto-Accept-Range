@@ -1103,6 +1103,40 @@ document.getElementById("advisory-dismiss")?.addEventListener("click", () => {
   if (advisoryCurrent) { try { localStorage.setItem(advisoryKey(advisoryCurrent), "1"); } catch {} }
 });
 
+// ── Report a bug ──────────────────────────────────────────────────────────────
+function openBugReportOverlay() {
+  const ov = document.getElementById("bugOverlay");
+  if (!ov) return;
+  const ta = document.getElementById("bugDesc"); if (ta) ta.value = "";
+  const btn = document.getElementById("bugSubmit"); if (btn) { btn.disabled = false; btn.textContent = "Submit"; }
+  ov.style.display = "";
+}
+function closeBugReportOverlay() {
+  const ov = document.getElementById("bugOverlay");
+  if (ov) ov.style.display = "none";
+}
+// `submit_bug_report` returns `Result<(), String>` — same as the party
+// commands above, `TAURI.invoke` directly so a real failure reason reaches the toast.
+async function submitBugReport() {
+  const ta = document.getElementById("bugDesc");
+  const description = ta ? ta.value.trim() : "";
+  if (!description) { toast("Describe the issue", "Type what happened before submitting.", "warning"); return; }
+  const btn = document.getElementById("bugSubmit");
+  if (btn) { btn.disabled = true; btn.textContent = "Sending…"; }
+  try {
+    if (TAURI) await TAURI.invoke("submit_bug_report", { description });
+    toast("Bug report sent", "Thanks — the team got it.", "success");
+    closeBugReportOverlay();
+  } catch (e) {
+    toast("Couldn't send report", String(e || ""), "danger");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Submit"; }
+  }
+}
+document.getElementById("bugCancel")?.addEventListener("click", () => closeBugReportOverlay());
+document.getElementById("bugSubmit")?.addEventListener("click", () => submitBugReport());
+document.getElementById("bugFab")?.addEventListener("click", () => openBugReportOverlay());
+
 // ── Ready-check overlay ───────────────────────────────────────────────────────
 let rcShown = false;
 function syncReadyCheck() {

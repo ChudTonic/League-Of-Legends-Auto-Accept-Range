@@ -439,6 +439,67 @@ fn get_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     })
 }
 
+/// The newest `chud_skins_*.log` in `skins::paths::logs_dir()`, by mtime —
+/// `slog::init` rolls a fresh file per launch, so "newest" is "current run".
+fn newest_log_file() -> Option<std::path::PathBuf> {
+    let dir = skins::paths::logs_dir();
+    std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("chud_skins_") && name.ends_with(".log")
+        })
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH))
+        .map(|e| e.path())
+}
+
+/// Last `max_bytes` of a log file (whole file if smaller) — enough recent
+/// context for a bug report without shipping a multi-MB log.
+fn tail_log(path: &std::path::Path, max_bytes: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return String::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > max_bytes {
+        let _ = f.seek(SeekFrom::Start(len - max_bytes));
+    }
+    let mut buf = Vec::new();
+    let _ = f.read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Send a user bug report (free-text description + the current run's log
+/// tail) to the relay. No auth beyond the host allowlist — same relay the
+/// Skins party feature already talks to.
+#[tauri::command]
+async fn submit_bug_report(description: String) -> Result<(), String> {
+    if description.trim().is_empty() {
+        return Err("Please describe the issue.".to_string());
+    }
+    let log = newest_log_file().map(|p| tail_log(&p, 200 * 1024)).unwrap_or_default();
+    let payload = json!({
+        "id": telemetry::daily_id(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": description,
+        "log": log,
+    });
+    let allowed = net::built_in_allowed_origins();
+    let client = net::build_external_client(20.0, allowed.clone());
+    let resp = client
+        .post("https://chud-party-relay.jivy26.workers.dev/bug-report")
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("server returned {}", resp.status()))
+    }
+}
+
 // ============================================================
 // Skins control panel — see `docs/SKINS_PORT.md` §5. These commands are thin
 // wrappers over the skins subsystem; none re-derive logic that lives in
@@ -2550,6 +2611,7 @@ pub fn run() {
             open_external_url,
             exit_app,
             get_diagnostics,
+            submit_bug_report,
             get_config,
             save_config,
             get_profile,

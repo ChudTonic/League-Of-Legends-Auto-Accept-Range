@@ -502,7 +502,7 @@ a:hover { color: var(--cyan); }
 /* ============================================================
    Toasts
    ============================================================ */
-.toast-wrap { position: fixed; right: 22px; bottom: 22px; z-index: 60; display: flex; flex-direction: column; gap: 10px; }
+.toast-wrap { position: fixed; right: 22px; bottom: 70px; z-index: 60; display: flex; flex-direction: column; gap: 10px; }
 .toast {
   min-width: 260px; max-width: 360px; padding: 13px 16px; border-radius: var(--r-md);
   background: var(--glass-strong); border: 1px solid var(--glass-border); backdrop-filter: blur(var(--glass-blur));
@@ -566,6 +566,44 @@ body.no-motion *, body.no-motion *::before, body.no-motion *::after { animation:
 }
 .update-pct { font-size: 12px; color: var(--text-muted); min-height: 16px; }
 .update-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; }
+
+/* ── Report a bug modal ─────────────────────────────────────────────────── */
+.bug-overlay {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  background: rgba(5,5,20,.72); backdrop-filter: blur(6px);
+  animation: fadeIn .25s ease both;
+}
+.bug-card {
+  width: min(440px, 92vw); padding: 26px 26px 22px;
+  background: var(--bg-stage); border: 1px solid var(--glass-border);
+  border-radius: 18px; box-shadow: 0 24px 80px rgba(0,0,0,.55);
+}
+.bug-title { font-size: 17px; font-weight: 700; color: var(--text-primary); margin-bottom: 14px; }
+.bug-textarea {
+  width: 100%; min-height: 120px; padding: 10px 12px; resize: vertical;
+  font: 13px/1.5 var(--font-ui); color: var(--text-primary);
+  background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-md);
+}
+.bug-textarea:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(53,228,255,.15); }
+.bug-note { margin-top: 10px; font-size: 12px; color: var(--text-muted); }
+.bug-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+
+/* ── Floating bug-report button ─────────────────────────────────────────── */
+/* Sits below .toast-wrap (bottom:22px, shifted up to bottom:70px above) so
+   toasts stack above the fab instead of covering it. */
+.bug-fab {
+  position: fixed; right: 22px; bottom: 22px; z-index: 55;
+  width: 36px; height: 36px; display: grid; place-items: center;
+  background: var(--glass-strong); border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--glass-blur)); border-radius: 50%;
+  color: var(--text-secondary); cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4); transition: transform .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.bug-fab svg { width: 18px; height: 18px; }
+.bug-fab:hover {
+  color: var(--cyan); transform: scale(1.08);
+  box-shadow: 0 8px 24px rgba(0,0,0,.4), 0 0 16px rgba(53,228,255,.35);
+}
 
 /* ── Favorite skins picker ─────────────────────────────────────────────── */
 /* NOTE: the list uses BLOCK layout, not flex-column. A flex column with a

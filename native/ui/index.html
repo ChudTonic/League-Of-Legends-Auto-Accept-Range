@@ -55,6 +55,22 @@
     </div>
   </div>
 
+  <div class="bug-overlay" id="bugOverlay" style="display:none">
+    <div class="bug-card">
+      <div class="bug-title">Report a bug</div>
+      <textarea class="bug-textarea" id="bugDesc" rows="6" placeholder="What happened? The more detail the better."></textarea>
+      <div class="bug-note">Your latest log is attached automatically.</div>
+      <div class="bug-actions">
+        <button class="btn ghost sm" id="bugCancel">Cancel</button>
+        <button class="btn primary sm" id="bugSubmit">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <button class="bug-fab" id="bugFab" title="Report a bug" aria-label="Report a bug">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9V7a3 3 0 0 1 6 0v2"></path><rect x="6" y="9" width="12" height="10" rx="5"></rect><path d="M6 13H3"></path><path d="M21 13h-3"></path><path d="M6 18l-2.5 2"></path><path d="M18 18l2.5 2"></path><path d="M6 10l-2-2"></path><path d="M18 10l2-2"></path></svg>
+  </button>
+
   <div class="toast-wrap" id="toasts"></div>
 
   <script src="src/shared.js"></script>
