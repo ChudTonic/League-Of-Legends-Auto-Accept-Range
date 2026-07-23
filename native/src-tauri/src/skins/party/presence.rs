@@ -23,7 +23,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::lcu;
 use crate::skins::lcu_ext;
-use crate::skins::slog::log_warn;
+use crate::skins::slog::{log_info, log_warn};
 use crate::skins::SkinsState;
 use crate::{AppState, LockExt};
 
@@ -74,6 +74,7 @@ impl PresenceDetector {
         let mut relay: Option<PartyRelay> = None;
         let mut current_party_id: Option<String> = None;
         let mut last_nudged_party_id: Option<String> = None;
+        let mut last_status: Option<String> = None;
         let mut poll_timer = tokio::time::interval(POLL_INTERVAL);
 
         loop {
@@ -87,6 +88,7 @@ impl PresenceDetector {
             if consent_version < CURRENT_PARTY_CONSENT_VERSION {
                 // Never contact the relay without consent.
                 Self::drop_connection(&mut relay);
+                log_presence(&mut last_status, format!("idle - party consent not accepted (v{consent_version} < v{CURRENT_PARTY_CONSENT_VERSION})"));
                 continue;
             }
 
@@ -95,6 +97,7 @@ impl PresenceDetector {
             // (also covers the user flipping party mode ON mid-poll).
             if self.party_manager.enabled() {
                 Self::drop_connection(&mut relay);
+                log_presence(&mut last_status, "idle - party mode is on".to_string());
                 continue;
             }
 
@@ -103,11 +106,16 @@ impl PresenceDetector {
                 Self::drop_connection(&mut relay);
                 current_party_id = None;
                 last_nudged_party_id = None;
+                log_presence(&mut last_status, format!("idle - phase {:?} is not lobby/queue", phase.as_deref()));
                 continue;
             }
 
-            let Some(auth) = lcu::cached_auth() else { continue };
+            let Some(auth) = lcu::cached_auth() else {
+                log_presence(&mut last_status, "waiting - LCU auth not ready".to_string());
+                continue;
+            };
             let Some(party_id) = lcu_ext::get_lobby_party_id(&self.http_client, &auth).await else {
+                log_presence(&mut last_status, "waiting - no lobby partyId (not in a party lobby)".to_string());
                 continue;
             };
 
@@ -123,8 +131,14 @@ impl PresenceDetector {
                 relay = self.connect_presence(room_key).await;
             }
 
-            let Some(active) = &relay else { continue };
-            if active.member_count() > 1 && should_nudge(&party_id, last_nudged_party_id.as_deref()) {
+            let Some(active) = &relay else {
+                log_presence(&mut last_status, "connect failed - retrying next poll".to_string());
+                continue;
+            };
+            let count = active.member_count();
+            log_presence(&mut last_status, format!("in lobby room (party {}), {count} member(s)", &party_id[..party_id.len().min(8)]));
+            if count > 1 && should_nudge(&party_id, last_nudged_party_id.as_deref()) {
+                log_info!("[PARTY] Presence: {count} in room -> nudging (chudders detected)");
                 let _ = self.app.emit(
                     "notification",
                     json!({
@@ -170,6 +184,17 @@ impl PresenceDetector {
                 None
             }
         }
+    }
+}
+
+/// Log a presence-loop status line only when it CHANGES — the loop polls every
+/// few seconds, so logging unconditionally would flood the log during a lobby.
+/// This gives a diagnosable trail (which gate the loop stops at, the member
+/// count once connected) without spam.
+fn log_presence(last: &mut Option<String>, status: String) {
+    if last.as_deref() != Some(status.as_str()) {
+        log_info!("[PARTY] Presence: {status}");
+        *last = Some(status);
     }
 }
 
