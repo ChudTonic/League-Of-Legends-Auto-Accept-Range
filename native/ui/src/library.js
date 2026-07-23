@@ -607,7 +607,9 @@
     if (!champId || !st.importFile) return;
     try {
       const detected = await inv("detect_mod_target", { filePath: st.importFile, championId: champId });
-      if (detected == null || st.importChampId !== champId) return;
+      // Also bail if the user picked a skin by hand while detection was still
+      // in flight — a manual pick must win over a late auto-detect result.
+      if (detected == null || st.importChampId !== champId || st.importSkinId !== "auto") return;
       const champ = (st.importCatalog || []).find((c) => c.champ_id === champId);
       const known = champ && (champ.skins || []).some((s) => s.skin_id === detected);
       if (known) { st.importSkinId = String(detected); paint(); }

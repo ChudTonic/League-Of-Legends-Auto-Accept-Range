@@ -174,11 +174,16 @@ pub struct InstalledMod {
     /// "Pick skin" control until the user (or a later rescan) resolves it.
     #[serde(default)]
     pub target_skin_id: Option<i64>,
+    /// Download/import category ("champion_skin", "vfx", "font", …). Empty for
+    /// records saved before this field existed (serde default) — treated as
+    /// "unknown" by anything that gates on it.
+    #[serde(default)]
+    pub category: String,
 }
 
 impl Default for InstalledMod {
     fn default() -> Self {
-        Self { name: String::new(), champ: String::new(), version: "1.0.0".into(), size_mb: 0.0, file: String::new(), scan_verdict: String::new(), scan_sha: String::new(), target_skin_id: None }
+        Self { name: String::new(), champ: String::new(), version: "1.0.0".into(), size_mb: 0.0, file: String::new(), scan_verdict: String::new(), scan_sha: String::new(), target_skin_id: None, category: String::new() }
     }
 }
 

@@ -1725,8 +1725,10 @@ fn sanitize_mod_filename(name: &str, fallback: &str) -> String {
         .map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c })
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').trim();
-    let cleaned = if cleaned.len() > 80 { &cleaned[..80] } else { cleaned };
-    if cleaned.is_empty() { fallback.to_string() } else { cleaned.to_string() }
+    // Truncate on a CHAR boundary, not a byte offset — `&cleaned[..80]` panics
+    // the moment 80 bytes lands mid-codepoint (e.g. 80+ CJK chars, 3 bytes each).
+    let cleaned: String = cleaned.chars().take(80).collect();
+    if cleaned.is_empty() { fallback.to_string() } else { cleaned }
 }
 
 /// The full catalog in one shot (the Library page filters it client-side).
@@ -1868,6 +1870,15 @@ async fn migrate_library_targets(app: &AppHandle) {
             .iter()
             .filter_map(|(mod_id, rec)| {
                 if rec.target_skin_id.is_some() {
+                    return None;
+                }
+                // Gate to champion_skin — running skin-detection on a champ-tied
+                // vfx/sfx/ui/voiceover/loading_screen mod would misfile it as a
+                // skin swap. Records saved before `category` existed are "" —
+                // best-effort: still migrate those (they're the pre-3.0.9 stuck
+                // skins this exists for) at the residual risk of a legacy
+                // champ-tied vfx/sfx mod (also "") getting misclassified.
+                if rec.category != "champion_skin" && !rec.category.is_empty() {
                     return None;
                 }
                 let mut comps = std::path::Path::new(&rec.file).components();
@@ -2185,6 +2196,7 @@ pub(crate) async fn place_library_mod(
         scan_verdict: summary.verdict.clone(),
         scan_sha: summary.sha256.clone(),
         target_skin_id,
+        category: category.to_string(),
     };
     Ok((Some(record), summary))
 }
@@ -2470,10 +2482,29 @@ async fn library_set_target_skin(
     let file_name = old_path.file_name().ok_or("mod file has no name")?.to_owned();
     let new_dir = skins::paths::mods_dir().join("skins").join(skin_id.to_string());
     tokio::fs::create_dir_all(&new_dir).await.map_err(|e| e.to_string())?;
-    let new_path = new_dir.join(&file_name);
+    let mut new_path = new_dir.join(&file_name);
     if old_path != new_path {
+        // `tokio::fs::rename` overwrites an existing destination on Windows —
+        // the exact landmine `migrate_champion_category_mods` documents. Suffix
+        // the destination filename until free instead of clobbering an
+        // unrelated mod that happens to already occupy this name in the
+        // target skin's slot.
+        if new_path.exists() {
+            let stem = new_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let ext = new_path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut n = 2;
+            loop {
+                let candidate = new_dir.join(format!("{stem}-{n}.{ext}"));
+                if !candidate.exists() {
+                    new_path = candidate;
+                    break;
+                }
+                n += 1;
+            }
+        }
         tokio::fs::rename(&old_path, &new_path).await.map_err(|e| format!("couldn't move '{name}': {e}"))?;
     }
+    let file_name = new_path.file_name().ok_or("mod file has no name")?.to_owned();
     let new_rel = std::path::PathBuf::from("skins").join(skin_id.to_string()).join(&file_name).to_string_lossy().replace('\\', "/");
     {
         let mut c = state.config.lock_safe();
@@ -2572,7 +2603,16 @@ fn place_imported_mod(
     let dir = mods_root.join(&rel_dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = sanitize_mod_filename(name, fallback_stem);
-    let file_name = format!("{stem}.fantome");
+    // Two imports with the same (or both blank -> fallback) display name would
+    // otherwise silently overwrite each other via `fs::write` — suffix the
+    // stem until the path is free, same dedup pattern as the mod_id loop in
+    // `import_mod` below.
+    let mut file_name = format!("{stem}.fantome");
+    let mut n = 2;
+    while dir.join(&file_name).exists() {
+        file_name = format!("{stem}-{n}.fantome");
+        n += 1;
+    }
     std::fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
     let rel_file = rel_dir.join(&file_name).to_string_lossy().replace('\\', "/");
     let record = config::InstalledMod {
@@ -2584,6 +2624,7 @@ fn place_imported_mod(
         scan_verdict: String::new(),
         scan_sha: String::new(),
         target_skin_id,
+        category: category.to_string(),
     };
     Ok((record, stem, rel_file))
 }
@@ -2609,7 +2650,27 @@ async fn import_mod(
 ) -> Result<(), String> {
     use skins::slog::log_info;
     let src = std::path::PathBuf::from(&file_path);
+    // Sanity ceiling before reading a local file of arbitrary size into memory —
+    // same 512MB ceiling `place_library_mod` applies to a network download.
+    let meta = tokio::fs::metadata(&src).await.map_err(|_| "That file isn't a valid mod archive.".to_string())?;
+    if meta.len() > 512 * 1024 * 1024 {
+        return Err("That file is too large to be a mod.".to_string());
+    }
     let bytes = tokio::fs::read(&src).await.map_err(|_| "That file isn't a valid mod archive.".to_string())?;
+
+    // Import used to bypass ModScan entirely — run the same in-memory scan the
+    // Library install path runs, before anything below touches disk.
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let http = net::build_external_client(20.0, allowed.clone());
+    let bytes = Arc::new(bytes);
+    let summary = scan_downloaded_mod(endpoint.trim_end_matches('/'), &allowed, &http, bytes.clone(), &name).await;
+    if summary.blocking {
+        return Err(format!("'{name}' was flagged by ModScan ({}) — not imported.", summary.verdict));
+    }
+
     // Cosmetic only (Installed-list display) — best-effort from the local
     // catalog; empty for global categories that don't carry a champion.
     let champ = champion_id
@@ -2618,8 +2679,10 @@ async fn import_mod(
         .unwrap_or_default();
     // Fall back to the source file's own stem so a blank Name still files sanely.
     let fallback = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "imported-mod".to_string());
-    let (record, stem, rel_file) =
-        place_imported_mod(&bytes, &category, champion_id, skin_id, &name, &champ, &fallback, &skins::paths::mods_dir())?;
+    let (mut record, stem, rel_file) =
+        place_imported_mod(bytes.as_slice(), &category, champion_id, skin_id, &name, &champ, &fallback, &skins::paths::mods_dir())?;
+    record.scan_verdict = summary.verdict.clone();
+    record.scan_sha = summary.sha256.clone();
 
     let mut c = state.config.lock_safe();
     let mut mod_id = format!("local-{}", stem.to_lowercase().replace(' ', "-"));
@@ -2628,8 +2691,14 @@ async fn import_mod(
         mod_id = format!("local-{}-{n}", stem.to_lowercase().replace(' ', "-"));
         n += 1;
     }
-    c.library.installed.insert(mod_id, record);
-    c.save().map_err(|e| e.to_string())?;
+    c.library.installed.insert(mod_id.clone(), record);
+    // The record was inserted before this fallible save — on failure it must
+    // not stay as a ghost entry (surviving in memory until some later save
+    // persists it despite the caller seeing this Err).
+    if let Err(e) = c.save() {
+        c.library.installed.remove(&mod_id);
+        return Err(e.to_string());
+    }
     log_info!("[LIBRARY] imported '{name}' -> mods/{rel_file}");
     Ok(())
 }
@@ -3215,6 +3284,39 @@ mod import_mod_tests {
         assert!(!root.join("skins").exists(), "a global category must never create a skins/ folder");
         assert_eq!(rec.target_skin_id, None);
         assert_eq!(rec.champ, "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn colliding_names_get_a_distinct_suffixed_file_not_a_clobber() {
+        let root = std::env::temp_dir().join("chud_import_test_collision");
+        let _ = std::fs::remove_dir_all(&root);
+        let bytes = tiny_zip();
+        let (rec1, stem1, rel1) =
+            place_imported_mod(&bytes, "champion_skin", Some(523), None, "Same Name", "Aphelios", "fallback", &root).unwrap();
+        let (rec2, stem2, rel2) =
+            place_imported_mod(&bytes, "champion_skin", Some(523), None, "Same Name", "Aphelios", "fallback", &root).unwrap();
+        assert_ne!(rel1, rel2, "second import of the same name must not overwrite the first");
+        // `stem` (the sanitized display name) is the same both times — the
+        // dedup suffix is applied only to the on-disk file name, in `rel`.
+        assert_eq!(stem1, stem2);
+        assert_eq!(rel2, format!("skins/523000/{stem2}-2.fantome"));
+        assert!(root.join(&rec1.file).exists(), "first file must still exist");
+        assert!(root.join(&rec2.file).exists(), "second (suffixed) file must exist");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn non_ascii_name_does_not_panic_on_truncation() {
+        let root = std::env::temp_dir().join("chud_import_test_nonascii");
+        let _ = std::fs::remove_dir_all(&root);
+        let bytes = tiny_zip();
+        // 80 CJK chars = 240 bytes — byte-slicing `[..80]` would panic mid-codepoint.
+        let long_name = "한".repeat(80);
+        let (rec, _stem, rel) =
+            place_imported_mod(&bytes, "champion_skin", Some(523), None, &long_name, "Aphelios", "fallback", &root).unwrap();
+        assert!(root.join(&rel).exists());
+        assert_eq!(rec.name, long_name);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
