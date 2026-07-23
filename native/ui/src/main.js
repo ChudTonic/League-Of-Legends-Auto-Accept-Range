@@ -1103,6 +1103,22 @@ document.getElementById("advisory-dismiss")?.addEventListener("click", () => {
   if (advisoryCurrent) { try { localStorage.setItem(advisoryKey(advisoryCurrent), "1"); } catch {} }
 });
 
+// ── cslol-dll.dll boot check ─────────────────────────────────────────────────
+// Mid-session failures already surface via the injection-result toast (code
+// 129 -> code_reason); this catches a broken DLL at launch, before the user
+// ever tries a skin. Re-checks the real condition each launch — no localStorage.
+async function checkDllModal() {
+  const s = await invoke("skins_get_state").catch(() => null);
+  const el = document.getElementById("dllModal");
+  if (!el) return;
+  // Only pop the repair modal on an affirmative "DLL is invalid" — a failed/
+  // absent diagnostics call is unknown, not broken, and must not false-alarm.
+  el.hidden = !(s && s.diagnostics && s.diagnostics.dllValid === false);
+}
+document.getElementById("dllOpenFolder")?.addEventListener("click", () => invoke("skins_open_cslol_dir").catch(() => {}));
+document.getElementById("dllRecheck")?.addEventListener("click", checkDllModal);
+document.getElementById("dllDismiss")?.addEventListener("click", () => { document.getElementById("dllModal").hidden = true; });
+
 // ── Report a bug ──────────────────────────────────────────────────────────────
 function openBugReportOverlay() {
   const ov = document.getElementById("bugOverlay");
@@ -1322,5 +1338,6 @@ async function boot() {
   // this webview attaches its listener, so ask directly too.
   invoke("updater_check").then((info) => { if (info) showUpdatePill(info); });
   invoke("advisory_status").then((p) => { if (p) onAdvisory(p); });
+  checkDllModal();
 }
 boot();

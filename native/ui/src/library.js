@@ -31,6 +31,11 @@
     ["loading_screen", "Loading Screen"],
     ["miscellaneous", "Other"],
   ];
+  // Categories that are always filed flat (no champ_id folder on the backend) —
+  // everything else in IMPORT_CATEGORIES besides champion_skin can optionally
+  // be tagged to a champion.
+  const CATEGORY_ALWAYS_GLOBAL = ["map_skin", "announcer", "font"];
+  const CHAMP_TAGGABLE = IMPORT_CATEGORIES.map((c) => c[0]).filter((v) => v !== "champion_skin" && !CATEGORY_ALWAYS_GLOBAL.includes(v));
   const THEME_DISPLAY = { anime: "Anime", meme: "Meme", fantasy: "Fantasy", scifi: "Sci-Fi", events: "Events" };
   const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   const fmtN = (n) => (n >= 1000 ? Math.round(n / 100) / 10 + "k" : String(n || 0));
@@ -585,13 +590,20 @@
     st.importBusy = false;
   }
 
-  // Category changed: champion/skin only apply to champion_skin, so switching
-  // away from it clears them — a stale champ pick from a previous category
-  // would otherwise silently ride along into a global-category import.
+  // Category changed. Champion is preserved when moving between champ-taggable
+  // categories (incl. to/from champion_skin) so the user isn't forced to
+  // re-pick — but the skin field only means anything for champion_skin, and
+  // a global category (map/announcer/font) can't be tagged at all.
   function onImportCatChange(category) {
+    const prev = st.importCategory;
     st.importCategory = category || "champion_skin";
-    if (st.importCategory !== "champion_skin") {
+    if (CATEGORY_ALWAYS_GLOBAL.includes(st.importCategory)) {
       st.importChampId = null;
+      st.importSkinId = "auto";
+    } else if (prev !== "champion_skin" && st.importCategory === "champion_skin") {
+      st.importChampId = null;
+      st.importSkinId = "auto";
+    } else if (prev === "champion_skin" && st.importCategory !== "champion_skin") {
       st.importSkinId = "auto";
     }
     paint();
@@ -604,7 +616,7 @@
     st.importChampId = champId || null;
     st.importSkinId = "auto";
     paint();
-    if (!champId || !st.importFile) return;
+    if (!champId || !st.importFile || st.importCategory !== "champion_skin") return;
     try {
       const detected = await inv("detect_mod_target", { filePath: st.importFile, championId: champId });
       // Also bail if the user picked a skin by hand while detection was still
@@ -619,10 +631,15 @@
   async function submitImport() {
     const category = st.importCategory || "champion_skin";
     const isChampSkin = category === "champion_skin";
+    const needsChampField = isChampSkin || CHAMP_TAGGABLE.includes(category);
     if (st.importBusy || (isChampSkin && !st.importChampId)) return;
-    const champId = isChampSkin ? st.importChampId : null;
+    const champId = needsChampField ? st.importChampId : null;
     const nameEl = document.getElementById("lbImportName");
     const name = ((nameEl && nameEl.value) || st.importName || "").trim() || "Imported mod";
+    // Never wire the skin dropdown for non-champion_skin categories — the
+    // backend's champ_dir closure consults skin_id regardless of category, so
+    // a stray skinId here would misfile a vfx/sfx/etc. into a skin-slot folder
+    // while its record's target_skin_id stays null (silent mismatch).
     const skinSel = st.importSkinId;
     const skinId = !isChampSkin ? null : skinSel === "auto" ? null : skinSel === "base" ? champId * 1000 : Number(skinSel);
     st.importBusy = true; paint();
@@ -631,7 +648,7 @@
         await TAURI.invoke("import_mod", { filePath: st.importFile, category, championId: champId, skinId, name });
       } else {
         // Browser-preview (no Tauri backend): mock the installed record locally.
-        const champ = isChampSkin ? (st.importCatalog || []).find((c) => c.champ_id === champId) : null;
+        const champ = champId ? (st.importCatalog || []).find((c) => c.champ_id === champId) : null;
         st.installed[`local-preview-${Date.now()}`] = { name, champ: champ ? champ.champ_name : "", version: "1.0.0", size_mb: 0, target_skin_id: skinId };
       }
       closeImportModal();
@@ -648,11 +665,17 @@
   function importModalHtml() {
     const category = st.importCategory || "champion_skin";
     const isChampSkin = category === "champion_skin";
+    const needsChampField = isChampSkin || CHAMP_TAGGABLE.includes(category);
+    const needsSkinField = isChampSkin;
     const catOptions = IMPORT_CATEGORIES.map(([val, label]) => `<option value="${val}" ${category === val ? "selected" : ""}>${esc(label)}</option>`).join("");
     const champs = st.importCatalog;
+    // Required for champion_skin (no blank-selectable placeholder beyond the
+    // prompt); optional for the taggable categories, where the blank option
+    // is a real choice — it means "file it in the flat global folder".
+    const blankChampLabel = isChampSkin ? "Select a champion…" : "None (global)";
     const champOptions = champs === null
       ? `<option value="">Loading champions…</option>`
-      : `<option value="">Select a champion…</option>` + champs.map((c) => `<option value="${c.champ_id}" ${st.importChampId === c.champ_id ? "selected" : ""}>${esc(c.champ_name)}</option>`).join("");
+      : `<option value="">${blankChampLabel}</option>` + champs.map((c) => `<option value="${c.champ_id}" ${st.importChampId === c.champ_id ? "selected" : ""}>${esc(c.champ_name)}</option>`).join("");
     const champ = champs && st.importChampId ? champs.find((c) => c.champ_id === st.importChampId) : null;
     // Real skins only (base excluded) — "Auto" and "Base skin" cover the base
     // case explicitly, same split `pickSkinModalHtml` uses above.
@@ -661,13 +684,15 @@
       `<option value="base" ${st.importSkinId === "base" ? "selected" : ""}>Base skin</option>` +
       realSkins.map((s) => `<option value="${s.skin_id}" ${st.importSkinId === String(s.skin_id) ? "selected" : ""}>${esc(s.name)}</option>`).join("");
     const fileName = (st.importFile || "").split(/[\\/]/).pop();
-    // Champion + Skin fields only make sense for champion_skin — a font/map/
-    // announcer import is just Category + Name.
-    const champSkinFields = isChampSkin ? `
+    // Champion field: champion_skin + every champ-taggable category (ui/vfx/
+    // sfx/voiceover/loading_screen/miscellaneous). Skin field: champion_skin
+    // only — a vfx/sfx/etc. mod isn't tied to a specific skin slot.
+    const champField = needsChampField ? `
         <div class="lb-import-field">
           <label class="lb-import-label" for="lbImportChamp">Champion</label>
           <select class="lb-import-select" id="lbImportChamp" data-import-champ="1" ${champs === null ? "disabled" : ""}>${champOptions}</select>
-        </div>
+        </div>` : "";
+    const skinField = needsSkinField ? `
         <div class="lb-import-field">
           <label class="lb-import-label" for="lbImportSkin">Skin</label>
           <select class="lb-import-select" id="lbImportSkin" data-import-skin="1" ${champ ? "" : "disabled"}>${skinOptions}</select>
@@ -680,7 +705,7 @@
         <div class="lb-import-field">
           <label class="lb-import-label" for="lbImportCat">Category</label>
           <select class="lb-import-select" id="lbImportCat" data-import-cat="1">${catOptions}</select>
-        </div>${champSkinFields}
+        </div>${champField}${skinField}
         <div class="lb-import-field">
           <label class="lb-import-label" for="lbImportName">Name</label>
           <input class="lb-import-input" id="lbImportName" type="text" value="${esc(st.importName || "")}" maxlength="80" placeholder="Mod name">

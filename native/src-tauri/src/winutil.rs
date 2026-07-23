@@ -109,6 +109,23 @@ pub fn open_folder(path: &str) {
     }
 }
 
+/// Free bytes available on the volume containing `path`, or `None` if the
+/// query fails. `path` must be an existing directory.
+#[cfg(windows)]
+pub fn free_disk_space_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut free_available = 0u64;
+    unsafe {
+        GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut free_available as *mut u64), None, None).ok()?;
+    }
+    Some(free_available)
+}
+
 // Non-Windows fallbacks so the crate still type-checks off-Windows.
 #[cfg(not(windows))]
 pub fn is_admin() -> bool {
@@ -128,3 +145,7 @@ pub fn league_client_rect() -> Option<(i32, i32, i32, i32)> {
 }
 #[cfg(not(windows))]
 pub fn relaunch_as_admin() {}
+#[cfg(not(windows))]
+pub fn free_disk_space_bytes(_path: &std::path::Path) -> Option<u64> {
+    None
+}

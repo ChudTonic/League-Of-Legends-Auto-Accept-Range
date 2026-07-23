@@ -117,9 +117,10 @@ pub fn classify_game_duration(secs: u64) -> Option<&'static str> {
 /// Whether an injection result code can indicate a SYSTEMIC break (mkoverlay
 /// hard failure = hash/format change, or its timeout) rather than a user-local
 /// condition (0 success, 2 skin not downloaded, 123 policy denial, 125/126
-/// timing races, 127 missing tools) that must stay local noise.
+/// timing races, 127 missing tools, 129 missing/damaged cslol-dll.dll, 130 low
+/// disk space) that must stay local noise.
 fn is_systemic_failure(code: i32) -> bool {
-    !matches!(code, 0 | 2 | 123 | 125 | 126 | 127)
+    !matches!(code, 0 | 2 | 123 | 125 | 126 | 127 | 129 | 130)
 }
 
 /// Report a fleet-break signal for an injection code, if it's a systemic one.
@@ -242,6 +243,13 @@ mod tests {
         for systemic in [1, 124, 3, 99] {
             assert!(is_systemic_failure(systemic), "code {systemic} must report");
         }
+    }
+
+    #[test]
+    fn local_dll_and_disk_codes_stay_local() {
+        assert!(!is_systemic_failure(129), "missing/damaged cslol-dll.dll is user-local");
+        assert!(!is_systemic_failure(130), "low disk space is user-local");
+        assert!(is_systemic_failure(124), "sanity: mkoverlay timeout still reports");
     }
 
     #[test]

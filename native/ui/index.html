@@ -55,6 +55,21 @@
     </div>
   </div>
 
+  <div class="adv-overlay" id="dllModal" hidden>
+    <div class="adv-card">
+      <div class="adv-head">
+        <svg class="adv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 20h20z"></path><path d="M12 10v5"></path><circle cx="12" cy="17.5" r="0.6" fill="currentColor" stroke="none"></circle></svg>
+        <div class="adv-title">Skin injection needs a repair</div>
+      </div>
+      <div class="adv-msg"><code>cslol-dll.dll</code> is missing or damaged, so skins will silently fail to apply in game. Re-run/repair the Chud install, or drop your own signed copy into the cslol-tools folder.</div>
+      <div class="bug-actions">
+        <button class="btn ghost sm" id="dllDismiss">Dismiss</button>
+        <button class="btn ghost sm" id="dllRecheck">Re-check</button>
+        <button class="btn primary sm" id="dllOpenFolder">Open tools folder</button>
+      </div>
+    </div>
+  </div>
+
   <div class="bug-overlay" id="bugOverlay" style="display:none">
     <div class="bug-card">
       <div class="bug-title">Report a bug</div>

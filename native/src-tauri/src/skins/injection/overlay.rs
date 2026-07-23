@@ -58,6 +58,8 @@ const OVERLAY_SIZE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// hook landed at load+31s, game crashed). A fresh unsuspended game is still
 /// safe — that's cslol's normal hook window.
 const MAX_LATE_HOOK_AGE: Duration = Duration::from_secs(8);
+/// Minimum free disk space required to attempt an overlay build.
+const MIN_FREE_DISK_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB headroom for the overlay build
 
 /// Injector-level sentinel (not from mkoverlay): the skin's `.fantome` wasn't
 /// found on disk / no mods staged. Distinct from the overlay codes below.
@@ -74,6 +76,8 @@ pub fn code_reason(code: i32) -> Option<&'static str> {
         125 => Some("the game started before the overlay finished building"),
         126 => Some("the game loaded too fast to hook safely — try again"),
         127 => Some("the mod-tools helper is missing (check the Skins setup)"),
+        129 => Some("the injection helper (cslol-dll.dll) is missing or damaged — see the Skins setup"),
+        130 => Some("there isn't enough free disk space to build the overlay"),
         _ => Some("the overlay build failed"),
     }
 }
@@ -95,7 +99,8 @@ enum BuildWait {
 /// suspended game exactly when `runoverlay` starts.
 ///
 /// Returns `Ok(0)` on success, or `Ok(<code>)` with a sentinel return code:
-/// `127` missing tool, `124` mkoverlay timeout, `125` build aborted because
+/// `127` missing tool, `129` missing/damaged cslol-dll.dll, `130` not enough
+/// free disk space, `124` mkoverlay timeout, `125` build aborted because
 /// the game auto-resumed without it, `126` hook refused (game loaded too
 /// long unsuspended), `123` safety policy denial (P0-A), `1` general error,
 /// or the child's own exit code. `Err` is reserved for setup failures with
@@ -113,7 +118,17 @@ pub fn mk_run_overlay(
 ) -> Result<i32, String> {
     if !tools.modtools.exists() {
         log_error!("[INJECTOR] Missing mod-tools.exe in {}", tools.modtools.display());
+        game_monitor.resume_if_suspended();
         return Ok(127);
+    }
+
+    // A missing/corrupt DLL would otherwise build the whole overlay and the
+    // skin just never applies, with no error — catch it before doing any work.
+    let tools_dir = tools.modtools.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if !crate::skins::injection::tools::cslol_dll_ok(tools_dir) {
+        log_error!("[INJECTOR] cslol-dll.dll missing or failed integrity check in {}", tools_dir.display());
+        game_monitor.resume_if_suspended();
+        return Ok(129);
     }
 
     // P0-A safety gate, re-checked before the build (state may have changed
@@ -123,6 +138,14 @@ pub fn mk_run_overlay(
         log_error!("[SAFETY] mkoverlay blocked ({}) - {}", denial.code(), denial.message());
         game_monitor.resume_if_suspended();
         return Ok(123);
+    }
+
+    if let Some(free) = crate::winutil::free_disk_space_bytes(overlay_dir.parent().unwrap_or(overlay_dir)) {
+        if free < MIN_FREE_DISK_BYTES {
+            log_error!("[INJECTOR] Not enough free disk space for overlay build: {} bytes free", free);
+            game_monitor.resume_if_suspended();
+            return Ok(130);
+        }
     }
 
     std::fs::create_dir_all(overlay_dir)
@@ -435,5 +458,16 @@ fn boost_priority(pid: u32) {
             log_info!("[INJECT] Boosted process priority (PID={pid})");
         }
         let _ = CloseHandle(handle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_reason_covers_dll_and_disk_sentinels() {
+        assert!(code_reason(129).unwrap().contains("cslol"));
+        assert!(code_reason(130).unwrap().contains("disk"));
     }
 }
