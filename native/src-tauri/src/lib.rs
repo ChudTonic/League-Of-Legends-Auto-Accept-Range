@@ -2563,10 +2563,10 @@ async fn library_update_mod(
     if mod_id.starts_with("local-") {
         return Err("Imported mods have no upstream to update from.".to_string());
     }
-    let (rel_file, name, old_sha, endpoint, allowed) = {
+    let (name, old_sha, endpoint, allowed) = {
         let c = state.config.lock_safe();
         let rec = c.library.installed.get(&mod_id).ok_or("mod not installed")?;
-        (rec.file.clone(), rec.name.clone(), rec.scan_sha.clone(), c.library.endpoint.clone(), net::allowed_origins(&c))
+        (rec.name.clone(), rec.scan_sha.clone(), c.library.endpoint.clone(), net::allowed_origins(&c))
     };
     let base = endpoint.trim_end_matches('/').to_string();
     let http = net::build_external_client(180.0, allowed.clone());
@@ -2602,13 +2602,29 @@ async fn library_update_mod(
     }
     drop(c); // release the config lock before the filesystem write below
 
-    let path = skins::paths::mods_dir().join(&rel_file);
+    // Re-read the CURRENT file path under the lock right before writing — the
+    // startup target-migration or a manual "Pick skin" can move this mod (and
+    // update rec.file) while we were downloading. Writing to a path snapshotted
+    // before the download would orphan the new bytes at a stale location and
+    // leave the record pointing at un-updated content. Bailing when the record
+    // is gone also avoids resurrecting a file for a mod removed mid-update.
+    let current_rel = {
+        let c = state.config.lock_safe();
+        let rec = c.library.installed.get(&mod_id).ok_or("mod not installed")?;
+        rec.file.clone()
+    };
+    let path = skins::paths::mods_dir().join(&current_rel);
     tokio::fs::write(&path, new_bytes.as_slice()).await.map_err(|e| format!("couldn't write updated '{name}': {e}"))?;
 
     let mut c = state.config.lock_safe();
     let Some(rec) = c.library.installed.get_mut(&mod_id) else {
         return Err("mod not installed".to_string()); // removed mid-update
     };
+    // Moved again during the write (extremely narrow) — don't stamp a success
+    // hash against a path the record no longer points at; the next check re-flags it.
+    if rec.file != current_rel {
+        return Err("the mod moved during the update — please try again.".to_string());
+    }
     rec.scan_sha = summary.sha256.clone();
     rec.scan_verdict = summary.verdict.clone();
     rec.size_mb = (new_bytes.len() as f64) / 1_048_576.0;
