@@ -53,8 +53,12 @@
     // / the `library-updates-available` event). `updatingMods`/`checkingUpdates`
     // are just busy-state flags for the Update / Check now buttons.
     updates: {}, updatingMods: {}, checkingUpdates: false,
+    updateAllBusy: false, updateAllProgress: null,
     cats: [], themesList: [],
     bundles: null, bundleInstalling: {},
+    // Flat skin_id -> name map, built once from `skins_catalog` (see
+    // `fetchSkinNameIndex`) so installed rows can show their target skin.
+    skinNameIndex: null,
     // modId -> post-download phase ("converting"), set by the backend's
     // library-install-phase event; swaps the progress caption while the pack
     // is being rewritten (e.g. announcer packs retargeted for all modes).
@@ -296,6 +300,8 @@
     const ids = Object.keys(st.installed);
     const byId = {}; (st.catalog || []).forEach((m) => (byId[m.id] = m));
     const totalMb = ids.reduce((a, id) => a + (st.installed[id].size_mb || 0), 0);
+    const updateCount = Object.keys(st.updates).length;
+    if (st.skinNameIndex === null) fetchSkinNameIndex();
     if (!ids.length) return `<div class="lb-empty"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg><div>Nothing installed yet</div><button class="btn sm primary" data-tab="browse">Browse mods</button></div>`;
     const rows = ids.map((id) => {
       const rec = st.installed[id], m = byId[id] || {};
@@ -323,15 +329,16 @@
       const actionCell = needsPick
         ? `<button class="btn sm" data-pick="${esc(id)}" data-champid="${esc(m.champId || "")}" data-champname="${esc(rec.name || id)}">Pick skin</button>`
         : `<span class="lb-inchamp" title="Open the Custom Mods button in champ select when this champion is up">In champ select ✓</span>`;
+      const skinName = rec.target_skin_id != null && st.skinNameIndex ? st.skinNameIndex[rec.target_skin_id] : null;
       return `<div class="lb-irow"><div class="lb-ithumb" style="${thumbStyle(m.id ? m : { id, thumb: null, champId: null, category: "Other" })}" data-open="${esc(id)}">${thumbInner(m.id ? m : { id, thumb: null, champId: null, category: "Other" })}</div>
-        <div><div class="lb-name" data-open="${esc(id)}">${esc(rec.name || id)}</div><div class="lb-meta">by <b>${esc(m.author || "unknown")}</b>${rec.champ ? " · " + esc(rec.champ) : ""} · ${(rec.size_mb || 0).toFixed(1)} MB</div></div>
+        <div><div class="lb-name" data-open="${esc(id)}">${esc(rec.name || id)}</div><div class="lb-meta">by <b>${esc(m.author || "unknown")}</b>${rec.champ ? " · " + esc(rec.champ) : ""} · ${(rec.size_mb || 0).toFixed(1)} MB</div>${skinName ? `<div class="lb-target-skin">→ ${esc(skinName)}</div>` : ""}</div>
         <div class="lb-ver">v${esc(rec.version || "1.0.0")}</div>
         <div class="lb-status-cell">${statusChip}${conflictChip}${updateChip}</div>
         <div class="lb-iactions">${updateBtn}${actionCell}<button class="lb-trash" data-remove="${esc(id)}" title="Remove"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg></button></div>
       </div>`;
     }).join("");
     return `<div class="lb-main">
-      <div class="lb-toolbar"><div class="lb-results">${ids.length} mod${ids.length === 1 ? "" : "s"} · ${totalMb.toFixed(0)} MB</div><button class="btn sm" data-checkupdates="1" ${st.checkingUpdates ? "disabled" : ""}>${st.checkingUpdates ? "Checking…" : "Check for updates"}</button></div>
+      <div class="lb-toolbar"><div class="lb-results">${ids.length} mod${ids.length === 1 ? "" : "s"} · ${totalMb.toFixed(0)} MB</div><button class="btn sm" data-checkupdates="1" ${st.checkingUpdates ? "disabled" : ""}>${st.checkingUpdates ? "Checking…" : "Check for updates"}</button>${updateCount ? `<button class="btn sm primary" data-updateall="1" ${st.updateAllBusy ? "disabled" : ""}>${st.updateAllBusy ? `Updating ${st.updateAllProgress?.done ?? 0}/${st.updateAllProgress?.total ?? 0}…` : `Update all (${updateCount})`}</button>` : ""}</div>
       <div class="glass lb-ilist">${rows}
         <div class="lb-autoup"><div><div class="lb-wl">Auto-update</div><div class="lb-wh">Check for new versions when Chud launches</div></div><div class="tog ${st.autoUpdate ? "on" : ""}" data-autoup="1"><div class="knob"></div></div></div>
       </div></div>`;
@@ -380,6 +387,23 @@
     try { const r = await inv("library_bundles"); st.bundles = (r && r.bundles) || (S.hasBackend ? [] : MOCK_BUNDLES); }
     catch (e) { console.error("bundles load failed", e); st.bundles = []; }
     st._bundlesLoading = false; paint();
+  }
+
+  // Flattens `skins_catalog` (already fetched offline for Import Mod / Pick
+  // skin) into a flat skin_id -> name map so installed rows can show what
+  // skin they target. No network — same local skin_ids.json backing.
+  async function fetchSkinNameIndex() {
+    if (st._skinIndexLoading) return; st._skinIndexLoading = true;
+    try {
+      const r = await inv("skins_catalog");
+      const index = {};
+      (r && r.champions || []).forEach((c) => (c.skins || []).forEach((s) => (index[s.skin_id] = s.name)));
+      st.skinNameIndex = index;
+    } catch (e) {
+      console.error("skins_catalog failed", e);
+      st.skinNameIndex = {};
+    }
+    st._skinIndexLoading = false; paint();
   }
 
   async function installBundle(champ) {
@@ -813,6 +837,7 @@
     on("[data-install]", "onclick", (e) => { e.stopPropagation(); install(e.currentTarget.dataset.install); });
     on("[data-update]", "onclick", (e) => { e.stopPropagation(); updateMod(e.currentTarget.dataset.update); });
     on("[data-checkupdates]", "onclick", (e) => { e.stopPropagation(); checkUpdatesNow(); });
+    on("[data-updateall]", "onclick", (e) => { e.stopPropagation(); updateAllMods(); });
     on("[data-bundle]", "onclick", (e) => { e.stopPropagation(); installBundle(e.currentTarget.dataset.bundle); });
     on("[data-remove]", "onclick", async (e) => { e.stopPropagation(); const id = e.currentTarget.dataset.remove; try { const r = await inv("library_remove", { modId: id }); if (r && r.installed) st.installed = r.installed; else if (!S.hasBackend) { const n = { ...st.installed }; delete n[id]; st.installed = n; } } catch (er) {} const m = (st.catalog || []).find((x) => x.id === id); toast("Mod removed", `${(m && m.name) || "Mod"} deleted from your mods folder.`, "danger"); paint(); });
   }
@@ -884,30 +909,68 @@
   // Re-download an installed mod in place and swap in its refreshed record.
   // `library_update_mod` never rewrites the file on a blocked/unchanged
   // verdict, so `st.updates[id]` only clears on an actual "updated"/"up_to_date".
-  async function updateMod(id) {
-    if (st.updatingMods[id]) return;
+  async function updateMod(id, { silent = false } = {}) {
+    if (st.updatingMods[id]) return "failed";
     st.updatingMods[id] = true; paint();
+    let outcome = "failed";
     try {
       const r = await inv("library_update_mod", { modId: id });
-      if (!r) { toast("Update failed", "Couldn't reach the update service.", "danger"); return; }
-      if (r.status === "blocked") {
+      if (!r) {
+        if (!silent) toast("Update failed", "Couldn't reach the update service.", "danger");
+      } else if (r.status === "blocked") {
         const verdict = (r.scan && r.scan.verdict) || "suspicious";
-        toast("Update blocked by ModScan", `The new version was flagged ${esc(verdict)} — not installed.`, "danger");
+        if (!silent) toast("Update blocked by ModScan", `The new version was flagged ${esc(verdict)} — not installed.`, "danger");
+        outcome = "blocked";
       } else if (r.status === "up_to_date") {
         delete st.updates[id];
-        toast("Already up to date", "No newer version to install.", "success");
+        if (!silent) toast("Already up to date", "No newer version to install.", "success");
+        outcome = "up_to_date";
       } else if (r.status === "updated") {
         delete st.updates[id];
         if (r.installed) st.installed[id] = r.installed;
         const nm = (st.installed[id] && st.installed[id].name) || id;
-        toast("Mod updated", `${nm} was updated to the latest version.`, "success");
+        if (!silent) toast("Mod updated", `${nm} was updated to the latest version.`, "success");
+        outcome = "updated";
       }
     } catch (e) {
-      toast("Update failed", String(e).slice(0, 120), "danger");
+      if (!silent) toast("Update failed", String(e).slice(0, 120), "danger");
     } finally {
       delete st.updatingMods[id];
       paint();
     }
+    return outcome;
+  }
+
+  // Batch-updates every flagged mod one at a time (not Promise.all — parallel
+  // catalog refetches would hammer the worker). Snapshots the id list up front
+  // since updateMod mutates st.updates mid-loop.
+  async function updateAllMods() {
+    if (st.updateAllBusy) return;
+    st.updateAllBusy = true; paint();
+    const ids = Object.keys(st.updates);
+    let updated = 0, current = 0, blocked = 0, failed = 0;
+    for (let i = 0; i < ids.length; i++) {
+      const outcome = await updateMod(ids[i], { silent: true });
+      if (outcome === "updated") updated++;
+      else if (outcome === "up_to_date") current++;
+      else if (outcome === "blocked") blocked++;
+      else failed++;
+      st.updateAllProgress = { done: i + 1, total: ids.length };
+      paint();
+    }
+    st.updateAllBusy = false; st.updateAllProgress = null;
+    let body;
+    if (!updated && !blocked && !failed && current) body = "Everything was already up to date";
+    else {
+      const clauses = [];
+      if (updated) clauses.push(`${updated} updated`);
+      if (current) clauses.push(`${current} already current`);
+      if (blocked) clauses.push(`${blocked} blocked`);
+      if (failed) clauses.push(`${failed} failed`);
+      body = clauses.join(" · ");
+    }
+    toast("Updates complete", body, blocked || failed ? "warning" : "success");
+    paint();
   }
 
   // Manual "Check for updates" — runs regardless of the Auto-update toggle
