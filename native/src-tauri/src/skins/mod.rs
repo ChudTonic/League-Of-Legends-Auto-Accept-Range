@@ -6,6 +6,7 @@
 
 pub mod announcer_fix;
 pub mod announcer_studio;
+pub mod broken_mods;
 pub mod champ_alias;
 pub mod datamove;
 pub mod downloads;

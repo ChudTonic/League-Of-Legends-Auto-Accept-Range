@@ -50,8 +50,14 @@ let currentPage = "dashboard";
 
 const { esc, invoke } = window.ChudShared;
 
-const TONE = { success: "#33e0a0", running: "#33e0a0", ice: "#35e4ff", info: "#35e4ff", gold: "#7ceeff", warning: "#e6a23c", danger: "#ff5470", neutral: "#6b6b96" };
-const toneColor = (t) => TONE[t] || TONE.neutral;
+// Status tones resolve from the ACTIVE theme's CSS tokens at call time, not
+// baked hexes — so a theme switch recolors them and legibility holds on the
+// light Graphite theme (its greens/ambers are darkened for contrast). They must
+// return a hex (callers append alpha like `+ "55"`), which is exactly what
+// getComputedStyle gives back for a custom property.
+const TONE_VAR = { success: "--green", running: "--green", ice: "--cyan", info: "--cyan", gold: "--cyan-soft", warning: "--amber", danger: "--red", neutral: "--text-muted" };
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const toneColor = (t) => cssVar(TONE_VAR[t] || "--text-muted") || "#6b6b96";
 
 // ── Glyphs (inline SVG so they inherit currentColor) ────────────────────────
 const GLYPH_NAMES = ["dashboard", "profile", "settings", "activity", "diagnostics", "power", "bolt", "crosshair", "lock", "warning", "ping", "refresh", "copy", "chevron", "shield", "skin", "library"];
@@ -89,6 +95,84 @@ function navItems() {
   return items;
 }
 
+// ── Theme system ──────────────────────────────────────────────────────────────
+// Six themes; the token VALUES live in styles/themes.css (one :root[data-theme]
+// block each). theme-boot.js already stamped the saved theme on <html> before
+// first paint — here we mirror it into `currentTheme`, paint the two pickers,
+// and persist + broadcast a change so the overlay window follows live.
+const THEMES = [
+  { id: "neon",     name: "Neon Glass", sub: "midnight glass · default", c1: "#ff3d9a", c2: "#35e4ff", bg: "#0a0a1f", bg2: "#100f2e", line: "rgba(255,255,255,.14)", tint: "rgba(255,255,255,.12)" },
+  { id: "verdant",  name: "Verdant",    sub: "emerald terminal",         c1: "#14e0a0", c2: "#86ffbe", bg: "#06130d", bg2: "#0a2015", line: "rgba(150,255,205,.16)", tint: "rgba(150,255,205,.14)" },
+  { id: "ember",    name: "Ember",      sub: "warm sunset",              c1: "#ff6a35", c2: "#ff2f74", bg: "#16070e", bg2: "#241018", line: "rgba(255,180,150,.16)", tint: "rgba(255,180,150,.14)" },
+  { id: "abyss",    name: "Abyss",      sub: "deep-sea midnight",        c1: "#2f8bff", c2: "#35e4ff", bg: "#050c1c", bg2: "#0a1730", line: "rgba(140,190,255,.16)", tint: "rgba(140,190,255,.14)" },
+  { id: "amethyst", name: "Amethyst",   sub: "regal premium",            c1: "#a25bff", c2: "#ff85e0", bg: "#110723", bg2: "#1c0d3a", line: "rgba(205,170,255,.16)", tint: "rgba(205,170,255,.14)" },
+  { id: "graphite", name: "Graphite",   sub: "minimal mono · light",     c1: "#3d445c", c2: "#4868ff", bg: "#f2f3f8", bg2: "#e4e7f0", line: "rgba(22,28,52,.14)", tint: "rgba(22,28,52,.12)", light: true },
+];
+let currentTheme = document.documentElement.dataset.theme || "neon";
+let booted = false; // gates the theme-change repaint until the first page render exists
+
+function applyTheme(id, opts) {
+  const persist = !opts || opts.persist !== false;
+  if (!THEMES.some((t) => t.id === id)) id = "neon";
+  currentTheme = id;
+  document.documentElement.dataset.theme = id;
+  try { localStorage.setItem("chud-theme", id); } catch { /* private mode */ }
+  if (persist && TAURI) invoke("set_theme", { theme: id }).catch(() => {});
+  repaintThemeUI();
+  // Most colors are CSS vars and re-cascade for free on the attribute swap;
+  // the few JS-baked status hexes (toneColor/paintClientChip, which append
+  // alpha and so must stay hex) only refresh on a re-render.
+  if (booted) renderPage();
+}
+
+// Two overlapping accent swatch dots (topbar button + popover rows + card foot).
+function themeDots(t, size) {
+  const dot = (c, ml) => `<span style="width:${size}px;height:${size}px;border-radius:50%;background:${c};border:1px solid rgba(0,0,0,.25);box-shadow:0 0 6px color-mix(in srgb, ${c} 55%, transparent);${ml ? "margin-left:-4px" : ""}"></span>`;
+  return `<span style="display:inline-flex;align-items:center">${dot(t.c1, false)}${dot(t.c2, true)}</span>`;
+}
+
+function renderThemeSwitch() {
+  const host = document.getElementById("themeSwitch");
+  if (!host) return;
+  const cur = THEMES.find((t) => t.id === currentTheme) || THEMES[0];
+  host.innerHTML =
+    `<button class="theme-btn" id="themeBtn" title="Change theme"><span class="theme-btn-ico">${ico("skin")}</span>${themeDots(cur, 11)}<span class="theme-btn-name">${esc(cur.name)}</span></button>` +
+    `<div class="theme-pop" id="themePop" style="display:none"><div class="theme-pop-h">THEME</div>` +
+    THEMES.map((t) => `<div class="theme-row ${t.id === currentTheme ? "on" : ""}" data-theme-id="${t.id}">${themeDots(t, 12)}<span class="theme-row-txt"><span class="theme-row-name">${esc(t.name)}</span><span class="theme-row-sub">${esc(t.sub)}</span></span><span class="theme-row-chk">✓</span></div>`).join("") +
+    `</div>`;
+  const btn = document.getElementById("themeBtn");
+  const pop = document.getElementById("themePop");
+  btn.onclick = (e) => { e.stopPropagation(); pop.style.display = pop.style.display === "none" ? "block" : "none"; };
+  pop.querySelectorAll(".theme-row").forEach((r) => (r.onclick = () => { applyTheme(r.dataset.themeId); pop.style.display = "none"; }));
+}
+
+// Repaint both pickers' current-selection state after a theme change.
+function repaintThemeUI() {
+  renderThemeSwitch();
+  const grid = document.getElementById("themeGrid");
+  if (grid) grid.querySelectorAll("[data-theme-card]").forEach((c) => c.classList.toggle("on", c.dataset.themeCard === currentTheme));
+}
+
+// Settings "Appearance" card — mini-preview grid, the FIRST card in Settings.
+function appearanceCard() {
+  const cards = THEMES.map((t) => {
+    const onAcc = t.light ? "#fff" : "#0a0a14";
+    return `<div class="theme-card ${t.id === currentTheme ? "on" : ""}" data-theme-card="${t.id}">
+      <div class="theme-badge" style="background:linear-gradient(135deg, ${t.c1}, ${t.c2});color:${onAcc}">✓</div>
+      <div class="theme-prev" style="background:linear-gradient(160deg, ${t.bg}, ${t.bg2});border:1px solid ${t.line}">
+        <div class="tp-bar" style="border-bottom:1px solid ${t.line}"><span style="background:${t.c1}"></span><span style="background:${t.c2}"></span></div>
+        <div class="tp-chip" style="background:linear-gradient(90deg, ${t.c1}, ${t.c2})"></div>
+        <div class="tp-tint" style="width:72%;background:${t.tint}"></div>
+        <div class="tp-tint" style="width:54%;background:${t.tint}"></div>
+      </div>
+      <div class="theme-foot"><span class="theme-foot-txt"><span class="theme-foot-name">${esc(t.name)}</span><span class="theme-foot-sub">${esc(t.sub)}</span></span>${themeDots(t, 10)}</div>
+    </div>`;
+  }).join("");
+  return `<div class="glass set-card"><div class="set-card-title"><span class="ci">${ico("skin")}</span>Appearance</div>
+    <div class="set-fhint" style="margin:4px 0 16px 28px">Applies instantly · saved on this device</div>
+    <div class="theme-grid" id="themeGrid">${cards}</div></div>`;
+}
+
 // ── Chrome ──────────────────────────────────────────────────────────────────
 function renderNav() {
   document.getElementById("nav").innerHTML = navItems().map((n) => `
@@ -107,7 +191,7 @@ function renderTop() {
 // Paint the dashboard's Client-linked chip (shared by first render + patch).
 function paintClientChip(el) {
   const online = state.clientOnline;
-  const oc = online ? "#33e0a0" : "#6b6b96";
+  const oc = cssVar(online ? "--green" : "--text-muted") || (online ? "#33e0a0" : "#6b6b96");
   el.style.color = oc; el.style.borderColor = oc + "55"; el.style.background = oc + "18";
   el.innerHTML = `<span class="slight ${online ? "on" : ""}" style="width:6px;height:6px;background:${oc};color:${oc}"></span>${online ? "Client linked" : "Client offline"}`;
 }
@@ -118,7 +202,7 @@ function riskstrip() {
     <div class="hazard">${ico("warning")}</div>
     <div class="grow">
       <div class="risk-title">Anti-cheat risk — read before enabling injection tools</div>
-      <div class="risk-body">Auto-Range sends synthetic input. Vanguard can detect this and <b style="color:#ff92a4">ban the account</b>. It is auto-disabled in ranked games; the app operates openly (no evasion). Use at your own discretion.</div>
+      <div class="risk-body">Auto-Range sends synthetic input. Vanguard can detect this and <b style="color:var(--red)">ban the account</b>. It is auto-disabled in ranked games; the app operates openly (no evasion). Use at your own discretion.</div>
     </div>
     <button class="btn danger sm" id="ackBtn">I understand — unlock</button>
   </div>`;
@@ -129,7 +213,7 @@ function modCard(t) {
   const locked = needsAck || needsAdmin;
   const tcol = toneColor(t.statusTone);
   const lockReason = needsAck ? "Acknowledge the Vanguard ban risk to unlock." : (needsAdmin ? "Administrator mode required." : "");
-  const safeTag = t.safe ? `<span style="color:#33e0a0">SAFE · LCU</span>` : `<span style="color:#e6a23c;display:inline-flex;align-items:center;gap:5px"><span style="width:11px;height:11px;display:inline-flex">${ico("lock")}</span>ADMIN</span>`;
+  const safeTag = t.safe ? `<span style="color:var(--green)">SAFE · LCU</span>` : `<span style="color:var(--amber);display:inline-flex;align-items:center;gap:5px"><span style="width:11px;height:11px;display:inline-flex">${ico("lock")}</span>ADMIN</span>`;
   return `
   <div class="mod ${t.running ? "armed" : ""} ${locked ? "locked" : ""}">
     ${locked ? `<span class="hazard-stripe"></span>` : ""}
@@ -429,6 +513,7 @@ const togCtl = (s, k) => `<div class="tog ${cval(s, k) ? "on" : ""}" data-sec="$
 function settingsHtml() {
   const card = (title, glyph, body) => `<div class="glass set-card"><div class="set-card-title"><span class="ci">${ico(glyph)}</span>${title}</div><div class="set-list">${body}</div></div>`;
   return `<div class="set-wrap">
+  ${appearanceCard()}
   ${card("Auto-Accept", "bolt", [
     setField("Check interval", "Queue poll cadence", numInput("auto_accept", "check_interval", "s")),
     setField("Retry delay", "Reconnect backoff (base)", numInput("auto_accept", "retry_delay", "s")),
@@ -465,6 +550,7 @@ async function renderSettings() {
   try { appearOffline = !!(await invoke("get_appear_offline")); } catch { /* keep last */ }
   const p = document.getElementById("page");
   p.innerHTML = settingsHtml();
+  p.querySelectorAll("[data-theme-card]").forEach((c) => (c.onclick = () => applyTheme(c.dataset.themeCard)));
   p.querySelectorAll("input").forEach((el) => (el.onchange = () => {
     const s = el.dataset.sec, k = el.dataset.key; cfg[s] = cfg[s] || {};
     if (el.type === "number") {
@@ -663,7 +749,7 @@ function skinsRiskStrip() {
     <div class="hazard">${ico("warning")}</div>
     <div class="grow">
       <div class="risk-title">Skin injection risk — read before enabling</div>
-      <div class="risk-body">Injecting skins modifies local game files and briefly suspends the League client while the overlay loads. This is against Riot's Terms of Service and carries <b style="color:#ff92a4">account risk</b>. Use at your own discretion.</div>
+      <div class="risk-body">Injecting skins modifies local game files and briefly suspends the League client while the overlay loads. This is against Riot's Terms of Service and carries <b style="color:var(--red)">account risk</b>. Use at your own discretion.</div>
     </div>
     <button class="btn danger sm" id="skinsAckBtn">I understand — unlock</button>
   </div>`;
@@ -681,9 +767,9 @@ function dllGate() {
     : "Skins need one file Chud can't ship for legal reasons: <code>cslol-dll.dll</code>.";
   const dir = esc(d.cslolDir || "%LOCALAPPDATA%\\\\Chud\\\\cslol-tools");
   return `<div class="glass" style="border:1px solid rgba(230,162,60,0.5)">
-    <div class="set-card-title" style="color:#e6a23c"><span class="ci">${ico("warning")}</span>One-time skin setup needed</div>
+    <div class="set-card-title" style="color:var(--amber)"><span class="ci">${ico("warning")}</span>One-time skin setup needed</div>
     <div class="dim" style="font-size:12.5px;line-height:1.6;margin-top:6px">${reason} Drop your own copy into this folder, then Re-check — it survives every update.</div>
-    <div class="mono" style="font-size:11px;color:#7ceeff;margin-top:8px;word-break:break-all">${dir}</div>
+    <div class="mono" style="font-size:11px;color:var(--cyan-soft);margin-top:8px;word-break:break-all">${dir}</div>
     <div class="row" style="gap:10px;margin-top:12px">
       <button class="btn sm primary" id="dllOpenBtn">Open folder</button>
       <button class="btn sm" id="dllRecheckBtn">Re-check</button>
@@ -1474,6 +1560,16 @@ async function boot() {
   await loadLibraryState();
   const real = await invoke("get_state");
   if (real) state = real;
+  // Durable theme source is the Rust config; reconcile the boot guess (which
+  // came from localStorage) against it so a webview-data wipe self-heals and
+  // the pickers paint. persist:false — reading state must not re-broadcast it.
+  try { await loadConfig(); } catch { /* keep null; lazy-loaded later */ }
+  applyTheme((cfg && cfg.ui && cfg.ui.theme) || currentTheme, { persist: false });
+  // Close the topbar theme popover on any outside click (bound once).
+  document.addEventListener("click", (e) => {
+    const host = document.getElementById("themeSwitch"), pop = document.getElementById("themePop");
+    if (pop && host && !host.contains(e.target)) pop.style.display = "none";
+  });
   renderNav(); renderTop(); renderPage(); syncReadyCheck();
   pushActivity("Launcher ready", "ice", "dashboard");
   pushActivity(state.clientOnline ? "League client connected" : "Waiting for League client", state.clientOnline ? "success" : "neutral", "ping");
@@ -1488,6 +1584,9 @@ async function boot() {
     ev.listen("update-available", (e) => showUpdatePill(e?.payload));
     ev.listen("update-progress", (e) => onUpdateProgress(e?.payload));
     ev.listen("advisory-changed", (e) => onAdvisory(e?.payload));
+    // Cross-window theme sync: overlay/other window changed it → apply here.
+    // Guard against our own echo (already applied) with the id check.
+    ev.listen("theme-changed", (e) => { const id = e?.payload; if (id && id !== currentTheme) applyTheme(id, { persist: false }); });
     ev.listen("data-migration-progress", (e) => {
       const p = e?.payload;
       if (!p || dataMigration.phase !== "busy") return;
@@ -1509,5 +1608,6 @@ async function boot() {
   invoke("updater_check").then((info) => { if (info) showUpdatePill(info); });
   invoke("advisory_status").then((p) => { if (p) onAdvisory(p); });
   checkDllModal();
+  booted = true; // theme switches may now trigger a page repaint
 }
 boot();

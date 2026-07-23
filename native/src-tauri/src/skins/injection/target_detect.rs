@@ -141,6 +141,33 @@ fn match_skin_bins(hashes: &HashSet<u64>, champ: &ChampionData, champion_id: i64
     found
 }
 
+/// Danger scan: does this mod override the champion's ROOT character record
+/// (`data/characters/<alias>/<alias>.bin`)? That file defines the champion's
+/// spells/abilities/stats — a purely cosmetic skin never ships it. A mod that
+/// does (typically an old, full-champion port) replaces the live ability data
+/// with its bundled copy; on a newer game patch the abilities break in-game
+/// (missing/unusable, can't level up) and only a client repair restores them.
+/// Returns the offending game path when found, so the caller can tell the user
+/// exactly why the skin was blocked. Offline-safe: the alias comes from the
+/// bundled static table, so it works with League closed (import-time scans).
+pub fn overrides_ability_data(mod_path: &Path, champion_id: i64) -> Option<String> {
+    let alias = champ_alias::champ_alias(champion_id)?.to_lowercase();
+    let hashes = collect_chunk_hashes(mod_path);
+    ability_bin_override(&hashes, &alias)
+}
+
+/// Core of `overrides_ability_data` with the alias already resolved — split out
+/// so it's unit-testable without the bundled alias table (which reads from disk).
+fn ability_bin_override(hashes: &HashSet<u64>, alias: &str) -> Option<String> {
+    if hashes.is_empty() {
+        return None;
+    }
+    let root_bin = format!("data/characters/{alias}/{alias}.bin");
+    hashes
+        .contains(&xxh64(root_bin.as_bytes(), 0))
+        .then_some(root_bin)
+}
+
 /// Single-slot pick from a chunk-hash match: a mod whose WAD references
 /// exactly one skin slot resolves to it, base included. Empty (no match) or
 /// multi-slot (ambiguous, e.g. a chroma-VFX mod covering several chromas) both
@@ -392,5 +419,30 @@ mod tests {
     #[test]
     fn pick_single_slot_ambiguous_is_none() {
         assert_eq!(pick_single_slot(&[523000, 523001]), None);
+    }
+
+    #[test]
+    fn ability_bin_override_flags_root_character_bin() {
+        // A mod whose WAD ships the champion ROOT record breaks abilities.
+        let mut hashes = HashSet::new();
+        hashes.insert(xxh64(b"data/characters/gangplank/gangplank.bin", 0));
+        assert_eq!(
+            ability_bin_override(&hashes, "gangplank"),
+            Some("data/characters/gangplank/gangplank.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn ability_bin_override_ignores_cosmetic_only_mod() {
+        // Skin/chroma bins + assets are cosmetic — never the root record.
+        let mut hashes = HashSet::new();
+        hashes.insert(xxh64(b"data/characters/gangplank/skins/skin2.bin", 0));
+        hashes.insert(xxh64(b"assets/characters/gangplank/skins/skin02/whatever.dds", 0));
+        assert_eq!(ability_bin_override(&hashes, "gangplank"), None);
+    }
+
+    #[test]
+    fn ability_bin_override_empty_is_none() {
+        assert_eq!(ability_bin_override(&HashSet::new(), "gangplank"), None);
     }
 }

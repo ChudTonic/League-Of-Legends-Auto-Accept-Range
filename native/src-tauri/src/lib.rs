@@ -331,6 +331,10 @@ fn save_config(cfg: serde_json::Value, app: AppHandle, state: tauri::State<Arc<A
                 parsed.safety.injection_ack = c.safety.injection_ack;
                 parsed.safety.skins_ack_version = c.safety.skins_ack_version;
                 parsed.party = c.party.clone();
+                // Theme is owned by `set_theme` (applied instantly from the
+                // topbar/Appearance pickers, not the Save button), so a stale
+                // general-settings snapshot must not revert it.
+                parsed.ui = c.ui.clone();
                 parsed.auto_accept.enabled = c.auto_accept.enabled;
                 // Same clamp `Config::load` applies, so a bad interval can't be
                 // persisted (a stale/oversized monitor interval fails injection
@@ -345,6 +349,46 @@ fn save_config(cfg: serde_json::Value, app: AppHandle, state: tauri::State<Arc<A
         }
         Err(e) => eprintln!("save_config: rejected invalid config ({e})"),
     }
+}
+
+/// Valid theme ids. `neon` is the built-in default (no themes.css block).
+const THEME_IDS: &[&str] = &["neon", "verdant", "ember", "abyss", "amethyst", "graphite"];
+
+/// Persist the active UI theme and broadcast the change so every open window
+/// (main + overlay) re-applies it live. Rejects an unknown id so a stale/hand-
+/// edited value can't strand the app on a non-existent theme. Returns the id
+/// actually stored (echoing the input on success).
+#[tauri::command]
+fn set_theme(theme: String, app: AppHandle, state: tauri::State<Arc<AppState>>) -> Result<String, String> {
+    if !THEME_IDS.contains(&theme.as_str()) {
+        return Err(format!("unknown theme id: {theme}"));
+    }
+    {
+        let mut c = state.config.lock_safe();
+        c.ui.theme = theme.clone();
+        let _ = c.save();
+    }
+    // Reaches both webviews; the emitting window ignores its own echo (it
+    // already applied the theme optimistically before calling this).
+    let _ = app.emit("theme-changed", &theme);
+    Ok(theme)
+}
+
+/// Custom mods flagged BROKEN by the ability-data safety guard (rel_path ->
+/// {name, champion_id, reason_path}). The Library badges these and keeps them
+/// out of favorites/random/party.
+#[tauri::command]
+fn skins_broken_mods() -> serde_json::Value {
+    // Scan the store first so a known-broken mod surfaces before it's ever
+    // injected (cheap — WAD headers only), then return the full registry.
+    crate::skins::broken_mods::scan_and_flag();
+    serde_json::to_value(crate::skins::broken_mods::list()).unwrap_or_else(|_| json!({}))
+}
+
+/// Clear a mod's BROKEN flag (e.g. the user replaced it with a fixed version).
+#[tauri::command]
+fn skins_clear_broken(rel_path: String) {
+    crate::skins::broken_mods::unflag(&rel_path);
 }
 
 /// Open an external attribution link (e.g. "View on RuneForge") in the
@@ -3458,6 +3502,9 @@ pub fn run() {
             submit_bug_report,
             get_config,
             save_config,
+            set_theme,
+            skins_broken_mods,
+            skins_clear_broken,
             get_profile,
             skins_get_state,
             skins_set_overlay_card_cols,

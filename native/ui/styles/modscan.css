@@ -16,7 +16,7 @@
 .ms-summary-warn .ms-sum-bad { font-weight: 700; }
 
 .ms-flagged-list { display: flex; flex-direction: column; gap: 8px; }
-.ms-frow { padding: 11px 12px; border-radius: 10px; background: rgba(255,84,112,0.06); border: 1px solid rgba(255,84,112,0.28); }
+.ms-frow { padding: 11px 12px; border-radius: 10px; background: color-mix(in srgb, var(--red) 6%, transparent); border: 1px solid color-mix(in srgb, var(--red) 28%, transparent); }
 .ms-frow-err { background: rgba(255,255,255,0.03); border-color: var(--glass-border); }
 .ms-frow-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .ms-frow-name { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -46,9 +46,9 @@
 .ms-irow-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .ms-irow-detail { padding: 0 2px; margin-top: 8px; }
 
-.ms-v-ok { color: var(--green); border-color: rgba(51,224,160,0.33); background: rgba(51,224,160,0.09); }
-.ms-v-warn { color: var(--amber); border-color: rgba(230,162,60,0.45); background: rgba(230,162,60,0.12); }
-.ms-v-bad { color: var(--red); border-color: rgba(255,84,112,0.55); background: rgba(255,84,112,0.16); font-weight: 800; box-shadow: 0 0 12px rgba(255,84,112,0.25); }
+.ms-v-ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 33%, transparent); background: color-mix(in srgb, var(--green) 9%, transparent); }
+.ms-v-warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+.ms-v-bad { color: var(--red); border-color: color-mix(in srgb, var(--red) 55%, transparent); background: color-mix(in srgb, var(--red) 16%, transparent); font-weight: 800; box-shadow: 0 0 12px color-mix(in srgb, var(--red) 25%, transparent); }
 .ms-v-err, .ms-v-none { color: var(--text-muted); border-color: var(--glass-border); background: rgba(255,255,255,0.04); }
 .ms-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; background: currentColor; }
 

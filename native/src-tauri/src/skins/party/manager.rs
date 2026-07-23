@@ -1438,6 +1438,19 @@ impl PartyManager {
             }
         };
 
+        // SAFETY: a PEER's mod that overrides champion ability data would break
+        // YOUR game just as badly. Never stage one — skip it and keep the rest
+        // of the party's skins. (Only the peer's own custom mod can trip this;
+        // an official skin ZIP never ships the character record.)
+        if skin_data.custom_mod_relative_path.is_some() {
+            if let Some(bad) =
+                crate::skins::injection::target_detect::overrides_ability_data(&source, skin_data.champion_id)
+            {
+                log_warn!("[PARTY_INJECT] Skipped {}'s skin — its mod overrides {bad} (champion ability data); would break your game", skin_data.name);
+                return None;
+            }
+        }
+
         let mod_folder_name = if source.is_dir() {
             source.file_name().map(|n| n.to_string_lossy().into_owned())
         } else {

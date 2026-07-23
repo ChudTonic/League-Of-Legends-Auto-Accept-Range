@@ -164,9 +164,12 @@
 
   async function load() {
     try {
-      const [cat, state] = await Promise.all([inv("library_catalog_all"), inv("library_state")]);
+      const [cat, state, broken] = await Promise.all([inv("library_catalog_all"), inv("library_state"), inv("skins_broken_mods").catch(() => ({}))]);
       st.catalog = ((cat && cat.mods) || (S.hasBackend ? [] : MOCK_MODS)).map(adapt);
       if (state) { st.installed = state.installed || {}; st.favs = state.favs || []; st.autoUpdate = state.autoUpdate !== false; st.conflicts = state.conflicts || {}; }
+      // rel_path -> {name, champion_id, reason_path} for mods our safety guard
+      // found to override champion ability data (would break the game in-game).
+      st.brokenMods = broken || {};
     } catch (e) { console.error("library load failed", e); st.catalog = []; }
     const cs = new Set(), ts = new Set();
     st.catalog.forEach((m) => { cs.add(m.category); m.themes.forEach((t) => ts.add(t)); });
@@ -318,7 +321,13 @@
       // as base-targeted and let them re-target via "Change skin" if they
       // actually wanted a specific skin.
       const onBase = rec.target_skin_id == null && m.rawCategory === "champion_skin";
-      const statusChip = `<span class="chip lb-chip-ok"><span class="lb-dot on"></span>WORKING</span>`;
+      // Safety flag: this mod overrides the champion's ability/character data and
+      // is blocked from injecting (it would break the game in-game). Keyed by the
+      // mod's file path in the store.
+      const broken = (rec.file && st.brokenMods && st.brokenMods[rec.file]) || null;
+      const statusChip = broken
+        ? `<span class="chip lb-chip-broken" title="This mod overrides ${esc(rec.champ || "the champion")}'s abilities (${esc(broken.reason_path)}) — blocked so it can't break your game. Remove it and find a cosmetic-only version.">⛔ BROKEN — breaks abilities</span>`
+        : `<span class="chip lb-chip-ok"><span class="lb-dot on"></span>WORKING</span>`;
       // Purely informational — injection is already conflict-safe (explicit
       // per-path selection), this just flags that another installed mod also
       // claims this skin slot so the user knows only one applies per game.

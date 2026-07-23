@@ -1,0 +1,382 @@
+/* ============================================================
+   Chud — Theme pack (drop-in)
+   6 themes: neon (default) · verdant · ember · abyss · amethyst · graphite (light)
+
+   INSTALL
+   1. Load AFTER neon.css:
+        <link rel="stylesheet" href="styles/neon.css" />
+        <link rel="stylesheet" href="styles/themes.css" />
+   2. On boot:
+        document.documentElement.dataset.theme =
+          localStorage.getItem('chud-theme') || 'neon';
+   3. To switch:
+        document.documentElement.dataset.theme = id;
+        localStorage.setItem('chud-theme', id);
+      "neon" (or a missing/unknown attribute) = the default Neon Glass
+      values from neon.css — no block needed for it here.
+
+   NOTES
+   · Token NAMES are unchanged (--magenta/--cyan keep their legacy names;
+     each theme remaps their VALUES), so profile.js & friends keep working.
+   · The "shared remaps" section at the bottom replaces the hardcoded
+     rgba(255,61,154,…) glows in neon.css with color-mix() on the tokens,
+     so glows follow the theme. It applies to every theme, including default.
+   · JS TONE map (main.js) hardcodes status hexes — they read fine on all
+     five dark themes; for graphite consider swapping TONE to CSS vars later.
+   · overlay.html has its own hardcoded palette. The matching --ov-* tokens
+     per theme are included at the end for when you tokenize it.
+   ============================================================ */
+
+/* ── VERDANT — emerald terminal / hacker-green ─────────────── */
+:root[data-theme="verdant"] {
+  --bg-base:   #06130d;
+  --bg-stage:  #081a11;
+  --bg-panel:  rgba(150,255,205,0.045);
+  --bg-raised: rgba(150,255,205,0.07);
+  --bg-inset:  rgba(3,15,9,0.55);
+  --glass:        rgba(150,255,205,0.045);
+  --glass-strong: rgba(150,255,205,0.07);
+  --glass-border: rgba(150,255,205,0.12);
+  --text-primary:   #e9fff4;
+  --text-secondary: #8fc9ad;
+  --text-muted:     #587f6b;
+  --text-dark:      #04130c;
+  --line-soft:   rgba(150,255,205,0.08);
+  --line-strong: rgba(150,255,205,0.14);
+  --line-gold:   rgba(20,224,160,0.45);
+  --magenta:      #14e0a0;
+  --magenta-soft: #6cf0c2;
+  --cyan:         #86ffbe;
+  --cyan-soft:    #b9ffd9;
+  --neon-grad:    linear-gradient(135deg, #14e0a0, #86ffbe);
+  --neon-grad-h:  linear-gradient(90deg, #14e0a0, #86ffbe);
+  --muted: #8fc9ad;
+  --line:  rgba(150,255,205,0.12);
+  --gold:        #b9ffd9;
+  --gold-bright: #e9fff4;
+  --gold-hover:  #d2ffe7;
+  --gold-press:  #86ffbe;
+  --gold-fill:   rgba(134,255,190,0.10);
+  --teal: #86ffbe;
+  --blue: #6ce8c8;
+  --green: #33e0a0;  --green-fill: rgba(51,224,160,0.12);
+  --red:   #ff5f6e;  --red-fill:   rgba(255,95,110,0.12);
+  --amber: #ffc24d;  --amber-fill: rgba(255,194,77,0.12);
+  --purple: #9d7bff;
+}
+[data-theme="verdant"] .app-bg {
+  background:
+    radial-gradient(1100px 640px at 84% -12%, rgba(20,224,160,0.14), transparent 60%),
+    radial-gradient(1000px 620px at 4% 112%, rgba(134,255,190,0.10), transparent 58%),
+    linear-gradient(160deg, #06130d, #0a2015 60%, #081a11);
+}
+[data-theme="verdant"] .app-bg::after {   /* scanlines + faint column grid */
+  opacity: .55;
+  background:
+    repeating-linear-gradient(0deg, rgba(20,224,160,.05) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(134,255,190,.03) 0 1px, transparent 1px 90px);
+}
+
+/* ── EMBER — warm sunset / fire ────────────────────────────── */
+:root[data-theme="ember"] {
+  --bg-base:   #16070e;
+  --bg-stage:  #1c0a12;
+  --bg-panel:  rgba(255,180,150,0.05);
+  --bg-raised: rgba(255,180,150,0.075);
+  --bg-inset:  rgba(22,6,13,0.55);
+  --glass:        rgba(255,180,150,0.05);
+  --glass-strong: rgba(255,180,150,0.075);
+  --glass-border: rgba(255,180,150,0.13);
+  --text-primary:   #fff1ea;
+  --text-secondary: #cf9ba6;
+  --text-muted:     #916371;
+  --text-dark:      #1a060d;
+  --line-soft:   rgba(255,180,150,0.08);
+  --line-strong: rgba(255,180,150,0.14);
+  --line-gold:   rgba(255,106,53,0.45);
+  --magenta:      #ff6a35;
+  --magenta-soft: #ffa47c;
+  --cyan:         #ff2f74;
+  --cyan-soft:    #ff7fab;
+  --neon-grad:    linear-gradient(135deg, #ff6a35, #ff2f74);
+  --neon-grad-h:  linear-gradient(90deg, #ff6a35, #ff2f74);
+  --muted: #cf9ba6;
+  --line:  rgba(255,180,150,0.13);
+  --gold:        #ff7fab;
+  --gold-bright: #fff1ea;
+  --gold-hover:  #ffa3c2;
+  --gold-press:  #ff2f74;
+  --gold-fill:   rgba(255,47,116,0.10);
+  --teal: #ff7fab;
+  --blue: #f08a6a;
+  --green: #3ddc97;  --green-fill: rgba(61,220,151,0.12);
+  --red:   #ff4757;  --red-fill:   rgba(255,71,87,0.12);
+  --amber: #ffb347;  --amber-fill: rgba(255,179,71,0.12);
+  --purple: #c678dd;
+}
+[data-theme="ember"] .app-bg {
+  background:
+    radial-gradient(1100px 680px at 80% 115%, rgba(255,106,53,0.20), transparent 60%),
+    radial-gradient(900px 560px at 8% -14%, rgba(255,47,116,0.16), transparent 58%),
+    linear-gradient(160deg, #16070e, #241018 55%, #1c0a12);
+}
+[data-theme="ember"] .app-bg::after {   /* rising embers */
+  opacity: .55;
+  background:
+    radial-gradient(2px 2px at 18% 78%, rgba(255,166,80,.5), transparent 50%),
+    radial-gradient(1.5px 1.5px at 66% 88%, rgba(255,106,53,.45), transparent 50%),
+    radial-gradient(1.5px 1.5px at 40% 60%, rgba(255,127,171,.4), transparent 50%),
+    radial-gradient(2px 2px at 88% 70%, rgba(255,196,120,.4), transparent 50%),
+    radial-gradient(1.5px 1.5px at 30% 30%, rgba(255,106,53,.3), transparent 50%);
+}
+
+/* ── ABYSS — deep-sea midnight, cool & calm ────────────────── */
+:root[data-theme="abyss"] {
+  --bg-base:   #050c1c;
+  --bg-stage:  #061024;
+  --bg-panel:  rgba(140,190,255,0.05);
+  --bg-raised: rgba(140,190,255,0.075);
+  --bg-inset:  rgba(3,8,18,0.55);
+  --glass:        rgba(140,190,255,0.05);
+  --glass-strong: rgba(140,190,255,0.075);
+  --glass-border: rgba(140,190,255,0.12);
+  --text-primary:   #eaf3ff;
+  --text-secondary: #8fa6c9;
+  --text-muted:     #5a6c90;
+  --text-dark:      #04101f;
+  --line-soft:   rgba(140,190,255,0.08);
+  --line-strong: rgba(140,190,255,0.14);
+  --line-gold:   rgba(47,139,255,0.45);
+  --magenta:      #2f8bff;
+  --magenta-soft: #7ab8ff;
+  --cyan:         #35e4ff;
+  --cyan-soft:    #7ceeff;
+  --neon-grad:    linear-gradient(135deg, #2f8bff, #35e4ff);
+  --neon-grad-h:  linear-gradient(90deg, #2f8bff, #35e4ff);
+  --muted: #8fa6c9;
+  --line:  rgba(140,190,255,0.12);
+  --gold:        #7ceeff;
+  --gold-bright: #eaf3ff;
+  --gold-hover:  #9ff1ff;
+  --gold-press:  #35e4ff;
+  --gold-fill:   rgba(53,228,255,0.10);
+  --teal: #35e4ff;
+  --blue: #6aa0f0;
+  --green: #33e0a0;  --green-fill: rgba(51,224,160,0.12);
+  --red:   #ff5470;  --red-fill:   rgba(255,84,112,0.12);
+  --amber: #e6a23c;  --amber-fill: rgba(230,162,60,0.12);
+  --purple: #7d8cff;
+}
+[data-theme="abyss"] .app-bg {
+  background:
+    radial-gradient(1200px 700px at 50% -20%, rgba(47,139,255,0.16), transparent 60%),
+    radial-gradient(1000px 600px at 85% 115%, rgba(53,228,255,0.09), transparent 58%),
+    linear-gradient(180deg, #071228, #050c1c 55%, #04091a);
+}
+[data-theme="abyss"] .app-bg::after {   /* light shafts + drifting motes */
+  opacity: .6;
+  background:
+    repeating-linear-gradient(105deg, transparent 0 160px, rgba(53,228,255,.035) 160px 200px, transparent 200px 340px),
+    radial-gradient(1.5px 1.5px at 30% 70%, rgba(124,238,255,.35), transparent 50%),
+    radial-gradient(2px 2px at 75% 40%, rgba(122,184,255,.3), transparent 50%);
+}
+
+/* ── AMETHYST — regal purple, premium ──────────────────────── */
+:root[data-theme="amethyst"] {
+  --bg-base:   #110723;
+  --bg-stage:  #150a2b;
+  --bg-panel:  rgba(205,170,255,0.05);
+  --bg-raised: rgba(205,170,255,0.075);
+  --bg-inset:  rgba(13,4,28,0.55);
+  --glass:        rgba(205,170,255,0.05);
+  --glass-strong: rgba(205,170,255,0.075);
+  --glass-border: rgba(205,170,255,0.13);
+  --text-primary:   #f5eeff;
+  --text-secondary: #a996cc;
+  --text-muted:     #716099;
+  --text-dark:      #120826;
+  --line-soft:   rgba(205,170,255,0.08);
+  --line-strong: rgba(205,170,255,0.14);
+  --line-gold:   rgba(162,91,255,0.45);
+  --magenta:      #a25bff;
+  --magenta-soft: #c79bff;
+  --cyan:         #ff85e0;
+  --cyan-soft:    #ffb5ec;
+  --neon-grad:    linear-gradient(135deg, #a25bff, #ff85e0);
+  --neon-grad-h:  linear-gradient(90deg, #a25bff, #ff85e0);
+  --muted: #a996cc;
+  --line:  rgba(205,170,255,0.13);
+  --gold:        #ffb5ec;
+  --gold-bright: #f5eeff;
+  --gold-hover:  #ffc9f1;
+  --gold-press:  #ff85e0;
+  --gold-fill:   rgba(255,133,224,0.10);
+  --teal: #ff85e0;
+  --blue: #9a8cff;
+  --green: #3ddc97;  --green-fill: rgba(61,220,151,0.12);
+  --red:   #ff5470;  --red-fill:   rgba(255,84,112,0.12);
+  --amber: #e6a23c;  --amber-fill: rgba(230,162,60,0.12);
+  --purple: #c07cff;
+}
+[data-theme="amethyst"] .app-bg {
+  background:
+    radial-gradient(1100px 640px at 84% -12%, rgba(162,91,255,0.20), transparent 60%),
+    radial-gradient(1000px 620px at 4% 112%, rgba(255,133,224,0.12), transparent 58%),
+    linear-gradient(160deg, #110723, #1c0d3a 60%, #150a2b);
+}
+[data-theme="amethyst"] .app-bg::after {   /* dense nebula starfield */
+  opacity: .55;
+  background:
+    radial-gradient(2px 2px at 20% 30%, rgba(255,255,255,.4), transparent 50%),
+    radial-gradient(1.5px 1.5px at 70% 65%, rgba(199,155,255,.45), transparent 50%),
+    radial-gradient(1.5px 1.5px at 42% 80%, rgba(255,181,236,.4), transparent 50%),
+    radial-gradient(1.5px 1.5px at 88% 22%, rgba(255,255,255,.35), transparent 50%),
+    radial-gradient(2px 2px at 12% 60%, rgba(199,155,255,.3), transparent 50%),
+    radial-gradient(1.5px 1.5px at 58% 12%, rgba(255,133,224,.35), transparent 50%);
+}
+
+/* ── GRAPHITE — minimal mono, clean & pro (LIGHT) ──────────── */
+:root[data-theme="graphite"] {
+  --bg-base:   #eef0f6;
+  --bg-stage:  #f7f8fc;
+  --bg-panel:  rgba(255,255,255,0.62);
+  --bg-raised: rgba(255,255,255,0.85);
+  --bg-inset:  rgba(255,255,255,0.75);
+  --glass:        rgba(255,255,255,0.62);
+  --glass-strong: rgba(255,255,255,0.85);
+  --glass-border: rgba(22,28,52,0.12);
+  --text-primary:   #171a26;
+  --text-secondary: #4c5268;
+  --text-muted:     #8288a0;
+  --text-dark:      #ffffff;   /* "text on accent" — white on the graphite→steel gradient */
+  --line-soft:   rgba(22,28,52,0.08);
+  --line-strong: rgba(22,28,52,0.15);
+  --line-gold:   rgba(72,104,255,0.45);
+  --magenta:      #3d445c;
+  --magenta-soft: #5a6380;
+  --cyan:         #4868ff;
+  --cyan-soft:    #3050e0;   /* used as text — kept dark for contrast on light */
+  --neon-grad:    linear-gradient(135deg, #3d445c, #4868ff);
+  --neon-grad-h:  linear-gradient(90deg, #3d445c, #4868ff);
+  --muted: #4c5268;
+  --line:  rgba(22,28,52,0.12);
+  --gold:        #3050e0;
+  --gold-bright: #171a26;
+  --gold-hover:  #2743c8;
+  --gold-press:  #4868ff;
+  --gold-fill:   rgba(72,104,255,0.10);
+  --teal: #4868ff;
+  --blue: #4868ff;
+  --green: #0f9f6e;  --green-fill: rgba(15,159,110,0.12);
+  --red:   #d9365e;  --red-fill:   rgba(217,54,94,0.10);
+  --amber: #a96f10;  --amber-fill: rgba(169,111,16,0.12);
+  --purple: #7c5cd6;
+}
+[data-theme="graphite"] .app-bg {
+  background:
+    radial-gradient(1100px 640px at 84% -12%, rgba(72,104,255,0.07), transparent 60%),
+    radial-gradient(1000px 620px at 4% 112%, rgba(61,68,92,0.06), transparent 58%),
+    linear-gradient(160deg, #f2f3f8, #e9ebf3 60%, #eef0f6);
+}
+[data-theme="graphite"] .app-bg::after {   /* engineering dot lattice */
+  opacity: 1;
+  background: radial-gradient(rgba(24,30,58,.06) 1px, transparent 1.3px);
+  background-size: 22px 22px;
+}
+/* Light-theme specifics neon.css can't express with tokens alone */
+[data-theme="graphite"] { color-scheme: light; }
+[data-theme="graphite"] .topbar { background: rgba(255,255,255,0.6); }
+[data-theme="graphite"] ::selection { background: rgba(72,104,255,.25); color: #171a26; }
+[data-theme="graphite"] *::-webkit-scrollbar-thumb { background: rgba(22,28,52,.18); background-clip: padding-box; }
+[data-theme="graphite"] *::-webkit-scrollbar-thumb:hover { background: rgba(22,28,52,.3); background-clip: padding-box; }
+[data-theme="graphite"] .tog .knob { background: #b7bdd1; }
+[data-theme="graphite"] .glass, [data-theme="graphite"] .hx, [data-theme="graphite"] .forge,
+[data-theme="graphite"] .mod, [data-theme="graphite"] .hero { box-shadow: 0 10px 30px rgba(38,48,92,0.08); }
+[data-theme="graphite"] .toast, [data-theme="graphite"] .update-card,
+[data-theme="graphite"] .bug-card, [data-theme="graphite"] .adv-card { box-shadow: 0 18px 60px rgba(38,48,92,0.22); }
+[data-theme="graphite"] .rc-overlay, [data-theme="graphite"] .adv-overlay,
+[data-theme="graphite"] .update-overlay, [data-theme="graphite"] .bug-overlay { background: rgba(90,100,140,.35); }
+
+/* ============================================================
+   SHARED REMAPS — retire the hardcoded magenta/cyan glows in
+   neon.css so every accent glow follows the active theme.
+   (Same visual result as stock on the default Neon Glass.)
+   ============================================================ */
+.brand-mark { box-shadow: 0 4px 18px color-mix(in srgb, var(--magenta) 35%, transparent); }
+.nav-item.active { box-shadow: 0 0 0 1px color-mix(in srgb, var(--magenta) 12%, transparent) inset; }
+.glass.lit, .hx.armed, .forge.lit {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--magenta) 10%, transparent),
+              0 0 40px color-mix(in srgb, var(--magenta) 8%, transparent) inset;
+}
+.btn.primary { box-shadow: 0 6px 22px color-mix(in srgb, var(--magenta) 32%, transparent); }
+.btn.primary:hover { box-shadow: 0 8px 28px color-mix(in srgb, var(--magenta) 42%, transparent); }
+.tog.on { box-shadow: 0 0 16px color-mix(in srgb, var(--magenta) 50%, transparent); }
+.hero.armed { box-shadow: 0 0 50px color-mix(in srgb, var(--magenta) 8%, transparent) inset; }
+.core-ring { background: conic-gradient(from 0deg, transparent 300deg, color-mix(in srgb, var(--magenta) 35%, transparent) 350deg, var(--cyan) 360deg); }
+.mod.armed { background: color-mix(in srgb, var(--magenta) 7%, transparent); border-color: color-mix(in srgb, var(--magenta) 40%, transparent); }
+.mod.armed .mod-gem { color: var(--magenta-soft); background: color-mix(in srgb, var(--magenta) 14%, transparent); }
+.mod-flow i { background: linear-gradient(90deg, transparent, var(--magenta), transparent); }
+.feature-card { background: linear-gradient(180deg, color-mix(in srgb, var(--magenta) 8%, transparent), var(--bg-panel)); border-color: color-mix(in srgb, var(--magenta) 28%, transparent); }
+.feature-card:hover { border-color: color-mix(in srgb, var(--magenta) 60%, transparent); }
+.fc-badge { background: color-mix(in srgb, var(--magenta) 92%, #000); }
+.fc-cta { color: var(--magenta-soft); }
+.pack-card:hover { border-color: color-mix(in srgb, var(--magenta) 42%, transparent); }
+.set-input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 15%, transparent); }
+.bug-textarea:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 15%, transparent); }
+.update-pill { color: var(--text-dark); box-shadow: 0 4px 16px color-mix(in srgb, var(--magenta) 38%, transparent); }
+.update-mark { filter: drop-shadow(0 4px 14px color-mix(in srgb, var(--magenta) 40%, transparent)); }
+.rc-card { box-shadow: 0 0 60px color-mix(in srgb, var(--magenta) 28%, transparent), 0 20px 60px rgba(0,0,0,.6); }
+::selection { background: color-mix(in srgb, var(--magenta) 32%, transparent); }
+.stu-name:focus, .stu-slot.drop { border-color: var(--magenta-soft); }
+.stu-slot.drop { background: color-mix(in srgb, var(--magenta) 8%, transparent); }
+.stu-slot.filled { border-color: color-mix(in srgb, var(--cyan) 35%, transparent); background: color-mix(in srgb, var(--cyan) 6%, transparent); }
+
+/* ============================================================
+   OVERLAY TOKENS — overlay.html tokenizes its palette with these
+   --ov-* variables (it links this file but NOT neon.css, so the
+   neon defaults live here on :root, not in neon.css). Each theme's
+   block below overrides them; the attribute selector out-specifies
+   the bare :root default so the active theme wins.
+   ============================================================ */
+:root {
+  --ov-bg: rgba(7,11,22,0.97); --ov-panel: #0b1120; --ov-inset: #0e1830;
+  --ov-line: #1b2a44; --ov-card-line: #14203a; --ov-btn: #12233a;
+  --ov-text: #dff3ff; --ov-muted: #7a93a8; --ov-dim: #55708a;
+  --ov-acc: #35e4ff; --ov-acc-soft: #7ceeff; --ov-on-acc: #070b16;
+  --ov-acc2: #a06cff; --ov-acc2-soft: #c8a6ff; --ov-on-acc2: #0b0616; --ov-gold: #ffcf5c;
+}
+:root[data-theme="verdant"] {
+  --ov-bg: rgba(5,17,11,0.97); --ov-panel: #08170f; --ov-inset: #0d2517;
+  --ov-line: #1b3a29; --ov-card-line: #14301f; --ov-btn: #123626;
+  --ov-text: #dcffee; --ov-muted: #7aa88f; --ov-dim: #557a66;
+  --ov-acc: #2ce8ad; --ov-acc-soft: #8dffd0; --ov-on-acc: #04130c;
+  --ov-acc2: #9d7bff; --ov-acc2-soft: #c3aaff; --ov-on-acc2: #0b0616; --ov-gold: #ffd76b;
+}
+:root[data-theme="ember"] {
+  --ov-bg: rgba(26,8,16,0.97); --ov-panel: #1d0b13; --ov-inset: #2a101b;
+  --ov-line: #45202c; --ov-card-line: #351823; --ov-btn: #3a1a24;
+  --ov-text: #ffe9e0; --ov-muted: #b08492; --ov-dim: #7d5966;
+  --ov-acc: #ff6a35; --ov-acc-soft: #ffb08a; --ov-on-acc: #1a060d;
+  --ov-acc2: #c678dd; --ov-acc2-soft: #e2aaf2; --ov-on-acc2: #16041c; --ov-gold: #ffcf5c;
+}
+:root[data-theme="abyss"] {
+  --ov-bg: rgba(4,10,22,0.97); --ov-panel: #071026; --ov-inset: #0c1832;
+  --ov-line: #1a2b4d; --ov-card-line: #12203d; --ov-btn: #12233f;
+  --ov-text: #dfeeff; --ov-muted: #7a93b8; --ov-dim: #556e94;
+  --ov-acc: #35e4ff; --ov-acc-soft: #7ceeff; --ov-on-acc: #04101f;
+  --ov-acc2: #7d8cff; --ov-acc2-soft: #aab4ff; --ov-on-acc2: #060a24; --ov-gold: #ffcf5c;
+}
+:root[data-theme="amethyst"] {
+  --ov-bg: rgba(16,6,31,0.97); --ov-panel: #150a2b; --ov-inset: #1e1040;
+  --ov-line: #33235c; --ov-card-line: #281a4d; --ov-btn: #2a1c50;
+  --ov-text: #f2e8ff; --ov-muted: #9c88c4; --ov-dim: #6d5b96;
+  --ov-acc: #b47aff; --ov-acc-soft: #d4b3ff; --ov-on-acc: #120826;
+  --ov-acc2: #ff85e0; --ov-acc2-soft: #ffbdee; --ov-on-acc2: #200a1c; --ov-gold: #ffcf5c;
+}
+:root[data-theme="graphite"] {
+  --ov-bg: rgba(252,253,255,0.98); --ov-panel: #f1f3f9; --ov-inset: #e8ebf4;
+  --ov-line: #d3d8e8; --ov-card-line: #dde2ef; --ov-btn: #e3e8f5;
+  --ov-text: #1b1f2e; --ov-muted: #6b7290; --ov-dim: #9aa0b8;
+  --ov-acc: #4868ff; --ov-acc-soft: #3b57d9; --ov-on-acc: #ffffff;
+  --ov-acc2: #7c5cd6; --ov-acc2-soft: #6a48c9; --ov-on-acc2: #ffffff; --ov-gold: #a96f10;
+}

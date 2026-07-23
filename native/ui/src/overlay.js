@@ -280,11 +280,11 @@ function computeDerived() {
   const totalCount = (skinActive ? 1 : 0) + (mapName ? 1 : 0) + (annName ? 1 : 0) + (fontName ? 1 : 0) + otherCount;
 
   const dots = [];
-  if (skinActive) dots.push({ c: "#35e4ff", name: "Skin" });
-  if (mapName) dots.push({ c: "#7ceeff", name: "Map" });
-  if (annName) dots.push({ c: "#ffcf5c", name: "Announcer" });
-  if (fontName) dots.push({ c: "#dff3ff", name: "Font" });
-  if (otherCount) dots.push({ c: "#a06cff", name: "Other mods" });
+  if (skinActive) dots.push({ c: "var(--ov-acc)", name: "Skin" });
+  if (mapName) dots.push({ c: "var(--ov-acc-soft)", name: "Map" });
+  if (annName) dots.push({ c: "var(--ov-gold)", name: "Announcer" });
+  if (fontName) dots.push({ c: "var(--ov-text)", name: "Font" });
+  if (otherCount) dots.push({ c: "var(--ov-acc2)", name: "Other mods" });
 
   const chips = [];
   if (skinActive) {
@@ -298,12 +298,12 @@ function computeDerived() {
       const cn = chromas.find((c) => c.id === chromaId);
       if (curForm) label += " · " + curForm.display; else if (cn) label += " · " + cn.name;
     }
-    chips.push({ tab: "skins", dot: "#35e4ff", label, title: "Skin — click to view" });
+    chips.push({ tab: "skins", dot: "var(--ov-acc)", label, title: "Skin — click to view" });
   }
-  if (mapName) chips.push({ tab: "maps", dot: "#7ceeff", label: mapName, title: "Map mod" });
-  if (annName) chips.push({ tab: "ann", dot: "#ffcf5c", label: annName, title: "Announcer" });
-  if (fontName) chips.push({ tab: "fonts", dot: "#dff3ff", label: fontName, title: "Font mod" });
-  if (otherCount) chips.push({ tab: "other", dot: "#a06cff", label: otherCount + " other", title: "Stacking mods" });
+  if (mapName) chips.push({ tab: "maps", dot: "var(--ov-acc-soft)", label: mapName, title: "Map mod" });
+  if (annName) chips.push({ tab: "ann", dot: "var(--ov-gold)", label: annName, title: "Announcer" });
+  if (fontName) chips.push({ tab: "fonts", dot: "var(--ov-text)", label: fontName, title: "Font mod" });
+  if (otherCount) chips.push({ tab: "other", dot: "var(--ov-acc2)", label: otherCount + " other", title: "Stacking mods" });
 
   return { sel, skinActive, mapName, annName, fontName, otherCount, totalCount, dots, chips };
 }
@@ -587,7 +587,7 @@ function renderAnnPanel() {
     return `<div class="lrow${on ? " on" : ""}" data-ann="${esc(a.id)}" title="${esc(a.description || a.name)}">
       <span class="radio${on ? " on" : ""}"></span>
       ${avatar}
-      <span class="mname"><span class="t1">${esc(a.name)}</span><span class="t2" style="color:${isPeanut ? "#ffcf5c" : "#7a93a8"}">${isPeanut ? "Chud Original" : "community"}</span></span>
+      <span class="mname"><span class="t1">${esc(a.name)}</span><span class="t2" style="color:${isPeanut ? "var(--ov-gold)" : "var(--ov-muted)"}">${isPeanut ? "Chud Original" : "community"}</span></span>
       <button class="playbtn dis" data-play="${esc(a.id)}" title="Preview coming soon">▶</button>
     </div>`;
   }).join("");
@@ -670,9 +670,9 @@ function renderPartyPanel(d) {
   const youName = p.my_summoner_name || "You";
   const youSub = d.chips.length ? d.chips.map((c) => c.label).join(" · ") : "nothing yet";
   let html = `<div class="prow you">
-    <span class="pav" style="background:#35e4ff">${esc(youName.charAt(0).toUpperCase())}</span>
-    <span class="pname"><span class="t1" style="color:#35e4ff">${esc(youName)}</span><span class="t2">${esc(youSub)}</span></span>
-    <span class="pstatus" style="color:#35e4ff">✓ signed</span>
+    <span class="pav" style="background:var(--ov-acc)">${esc(youName.charAt(0).toUpperCase())}</span>
+    <span class="pname"><span class="t1" style="color:var(--ov-acc)">${esc(youName)}</span><span class="t2">${esc(youSub)}</span></span>
+    <span class="pstatus" style="color:var(--ov-acc)">✓ signed</span>
   </div>`;
   html += peers.map((peer) => {
     const name = peer.summoner_name || "Peer";
@@ -680,9 +680,9 @@ function renderPartyPanel(d) {
     const sel = peer.skin_selection;
     const sub = sel ? `champ ${sel.champion_id} · skin ${sel.skin_id}${sel.chroma_id ? " · chroma " + sel.chroma_id : ""}` : "no pick yet";
     return `<div class="prow${connected ? "" : " dim"}">
-      <span class="pav" style="background:${connected ? "#a06cff" : "#3d5570"}">${esc(String(name).charAt(0).toUpperCase())}</span>
+      <span class="pav" style="background:${connected ? "var(--ov-acc2)" : "var(--ov-dim)"}">${esc(String(name).charAt(0).toUpperCase())}</span>
       <span class="pname"><span class="t1">${esc(name)}</span><span class="t2">${esc(sub)}</span></span>
-      <span class="pstatus" style="color:${connected ? "#35e4ff" : "#3d5570"}">${connected ? "✓ synced" : "—"}</span>
+      <span class="pstatus" style="color:${connected ? "var(--ov-acc)" : "var(--ov-dim)"}">${connected ? "✓ synced" : "—"}</span>
     </div>`;
   }).join("");
   html += `<div class="pnote">No summoner IDs leave your machine — ephemeral, signed session identities only.</div>`;
@@ -990,6 +990,33 @@ document.addEventListener("error", (e) => {
     } else {
       paused = true;
     }
+  });
+  // Live theme sync: the main window broadcasts on every theme switch. Swapping
+  // the attribute re-cascades every --ov-* token, so the overlay restyles with
+  // no re-render. theme-boot.js already applied the saved theme on load.
+  window.__TAURI__.event.listen("theme-changed", (e) => {
+    const id = e && e.payload;
+    if (!id) return;
+    document.documentElement.dataset.theme = id;
+    try { localStorage.setItem("chud-theme", id); } catch { /* private mode */ }
+  });
+  // A broken mod (overrides champion ability data) was skipped at inject time.
+  // Surface it IN-GAME so the user knows the SKIN failed, not Chud — heads off
+  // "your app broke my game" tickets. The overlay is often collapsed to its pill
+  // at inject time, so force it open to make the banner visible.
+  let blockedTimer = null;
+  window.__TAURI__.event.listen("skin-blocked", (e) => {
+    const p = e && e.payload;
+    const msg = (p && p.message) || "A skin was blocked to protect your game.";
+    if (!expanded) { expanded = true; render(); applyWindowSize(); }
+    const el = document.getElementById("blockedBanner");
+    if (!el) return;
+    el.innerHTML = `<span class="bb-ico">⚠️</span><span class="bb-txt">${esc(msg)}</span><button class="bb-x" id="bbDismiss">Dismiss</button>`;
+    el.style.display = "flex";
+    const x = document.getElementById("bbDismiss");
+    if (x) x.onclick = () => { el.style.display = "none"; };
+    if (blockedTimer) clearTimeout(blockedTimer);
+    blockedTimer = setTimeout(() => { el.style.display = "none"; }, 9000);
   });
   await tick();
   setInterval(tick, 1500);

@@ -278,6 +278,20 @@ impl Default for Telemetry {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ui {
+    /// Active theme id — one of neon/verdant/ember/abyss/amethyst/graphite.
+    /// Owned by the dedicated `set_theme` command; `save_config` preserves it.
+    pub theme: String,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Self { theme: "neon".to_string() }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -292,6 +306,7 @@ pub struct Config {
     pub network: Network,
     pub party: Party,
     pub telemetry: Telemetry,
+    pub ui: Ui,
 }
 
 /// Per-user config file path: `%APPDATA%/LeagueOfLegendsTools/config.json`.

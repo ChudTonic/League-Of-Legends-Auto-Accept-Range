@@ -28,6 +28,7 @@ use crate::lcu::{self, Auth};
 use crate::safety_manager::{self, InjectionDecision, InjectionDenial, InjectionOp};
 use crate::skins::features::historic::{self, HistoricEntry};
 use crate::skins::features::special;
+use crate::skins::broken_mods;
 use crate::skins::injection::storage::{self, ModStorageService};
 use crate::skins::injection::{base_skin_tracker, target_detect, zips, InjectionManager};
 use crate::skins::lcu_ext;
@@ -700,7 +701,24 @@ async fn run_custom_mod_injection(
     storage::clean_mods_dir(&mods_dir);
     let mut extra_names = Vec::new();
     let mut labels = Vec::new();
-    let has_custom_skin_folder = !custom_mod.relative_path.is_empty() && !custom_mod.mod_path.is_empty();
+    let mut has_custom_skin_folder = !custom_mod.relative_path.is_empty() && !custom_mod.mod_path.is_empty();
+
+    // SAFETY GUARD: refuse to inject a mod that overrides the champion's ROOT
+    // character/ability record — it swaps the game's live ability data for the
+    // mod's (usually stale) copy and breaks the champion in-game: missing/
+    // unusable abilities, can't level, needs a full client repair. Skip staging
+    // it, flag it BROKEN (persisted), and tell the user IN THE OVERLAY so a
+    // blocked skin reads as "this skin is bad", not "Chud broke my game".
+    if has_custom_skin_folder {
+        if let Some(bad_path) =
+            target_detect::overrides_ability_data(Path::new(&custom_mod.mod_path), custom_mod.champion_id)
+        {
+            log_warn!("[SAFETY] Blocked custom mod '{}' — overrides {bad_path} (champion ability data)", custom_mod.mod_name);
+            broken_mods::flag(&custom_mod.relative_path, &custom_mod.mod_name, custom_mod.champion_id, &bad_path);
+            notify_skin_blocked(app, &custom_mod.mod_name, &champion_name);
+            has_custom_skin_folder = false;
+        }
+    }
 
     if let Some(base_name) = &base_skin_name {
         log_info!("[INJECT] Extracting base skin ZIP: {base_name}");
@@ -950,6 +968,26 @@ fn parse_injected_id(name: &str) -> Option<i64> {
 /// backend reason verbatim), and return it so the caller aborts.
 /// Surface a REAL injection failure to the user (P0-1). Reads the reason the
 /// injector recorded; `None` = success or a benign skip, so nothing is shown.
+/// A custom mod was blocked by the ability-data safety guard. Tell the user in
+/// BOTH places: the main-window toast (if they have it open) and — the one that
+/// matters mid-game — a transient banner in the in-game overlay, so a skin that
+/// silently doesn't apply is understood as a bad skin, not a Chud bug (heads off
+/// support tickets). `champion` gives the message a concrete subject.
+fn notify_skin_blocked(app: &AppHandle, mod_name: &str, champion: &str) {
+    let name = if mod_name.trim().is_empty() { "That skin" } else { mod_name };
+    let champ = if champion.trim().is_empty() { "the champion" } else { champion };
+    let message = format!("{name} modifies {champ}'s abilities and was skipped to protect your game.");
+    let _ = app.emit(
+        "notification",
+        serde_json::json!({ "title": "Broken skin blocked", "message": message.clone(), "tone": "warning" }),
+    );
+    // Overlay-only payload — overlay.js shows it as a ~7s banner in champ select.
+    let _ = app.emit(
+        "skin-blocked",
+        serde_json::json!({ "mod": name, "champion": champ, "message": message }),
+    );
+}
+
 fn notify_injection_failed(app: &AppHandle, injection: &InjectionManager, label: &str) {
     if let Some(reason) = injection.take_injection_error() {
         let label = if label.trim().is_empty() { "Your skin" } else { label };
