@@ -768,3 +768,7 @@ body.no-motion *, body.no-motion *::before, body.no-motion *::after { animation:
   display: grid; place-items: center; font-size: 11px; font-weight: 800; box-shadow: 0 2px 8px rgba(0,0,0,.4);
   opacity: 0; transition: opacity .12s; }
 .theme-card.on .theme-badge { opacity: 1; }
+
+/* Referral code/invite chips (Settings → Refer a friend) */
+.ref-code { font-family: var(--font-mono); font-size: 12px; background: var(--glass-strong); border: 1px solid var(--glass-border);
+  border-radius: 6px; padding: 4px 8px; margin-right: 8px; color: var(--cyan-soft); user-select: all; word-break: break-all; }

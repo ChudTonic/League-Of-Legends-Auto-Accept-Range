@@ -292,6 +292,15 @@ impl Default for Ui {
     }
 }
 
+/// Referral-program state — opt-in only, owned by the `refer_*` commands.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Referral {
+    pub ref_code: String,     // this user's referrer code (set on "Refer a friend")
+    pub install_code: String, // set if they were referred (claimed a friend's code)
+    pub activated: bool,      // activation ping already sent
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -307,6 +316,7 @@ pub struct Config {
     pub party: Party,
     pub telemetry: Telemetry,
     pub ui: Ui,
+    pub referral: Referral,
 }
 
 /// Per-user config file path: `%APPDATA%/LeagueOfLegendsTools/config.json`.

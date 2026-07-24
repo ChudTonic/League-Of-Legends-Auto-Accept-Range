@@ -854,6 +854,9 @@ async fn run_custom_mod_injection(
             log_info!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
             log_info!("CUSTOM MOD INJECTION COMPLETED");
             log_info!("{}", "=".repeat(LOG_SEPARATOR_WIDTH));
+            // Referral activation ping (opt-in, once) — proves a referred install
+            // actually uses Chud. No-op for non-participants.
+            crate::referral::maybe_activate(&app);
             if let Some(cid) = champion_id {
                 if has_custom_skin_folder {
                     historic::write_historic_entry(cid, HistoricEntry::Path(format!("path:{}", custom_mod.relative_path)));

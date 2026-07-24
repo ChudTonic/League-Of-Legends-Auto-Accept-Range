@@ -510,10 +510,55 @@ const keyInput = (s, k) => `<span class="set-input-wrap"><input class="set-input
 const segMode = (s, k, opts) => `<span class="set-seg">${opts.map((o) => `<button class="seg-btn ${cval(s, k) === o ? "on" : ""}" data-sec="${s}" data-key="${k}" data-val="${o}">${o}</button>`).join("")}</span>`;
 const togCtl = (s, k) => `<div class="tog ${cval(s, k) ? "on" : ""}" data-sec="${s}" data-key="${k}"><div class="knob"></div></div>`;
 
+// ── Referral program (opt-in) ───────────────────────────────────────────────
+let referralState = null;
+async function loadReferral() {
+  try { referralState = await invoke("refer_state"); } catch { referralState = referralState || {}; }
+}
+function referralCard() {
+  const r = referralState || {};
+  const codeRow = r.ref_code
+    ? `<div class="set-field"><div><div class="set-flabel">Your referral code</div><div class="set-fhint">Friends enter this on their first run. Then run <b>/verify ${esc(r.ref_code)}</b> in Discord to link payouts.</div></div>
+        <div class="set-control"><code class="ref-code">${esc(r.ref_code)}</code><button class="btn ghost sm" data-refcopy="${esc(r.ref_code)}">Copy</button></div></div>`
+    : `<div class="set-field"><div><div class="set-flabel">Get your code</div><div class="set-fhint">Creates your shareable referral code.</div></div>
+        <div class="set-control"><button class="btn primary sm" id="referMintBtn">Refer a friend</button></div></div>`;
+  const inviteRow = `<div class="set-field"><div><div class="set-flabel">Discord invite</div><div class="set-fhint">Share this with friends too.</div></div>
+        <div class="set-control"><code class="ref-code">${esc(r.invite_url || "")}</code><button class="btn ghost sm" data-refcopy="${esc(r.invite_url || "")}">Copy</button></div></div>`;
+  const claimRow = r.install_code
+    ? `<div class="set-field"><div><div class="set-flabel">You were referred ✓</div><div class="set-fhint">Verify in Discord to count for your friend: <b>/verify ${esc(r.install_code)}</b></div></div>
+        <div class="set-control"><code class="ref-code">${esc(r.install_code)}</code><button class="btn ghost sm" data-refcopy="${esc(r.install_code)}">Copy</button></div></div>`
+    : `<div class="set-field"><div><div class="set-flabel">Referred by a friend?</div><div class="set-fhint">Enter their CHUD- code (optional, one-time).</div></div>
+        <div class="set-control"><span class="set-input-wrap"><input class="set-input" id="referClaimInput" placeholder="CHUD-XXXXXX" style="text-transform:uppercase"></span><button class="btn ghost sm" id="referClaimBtn">Apply</button></div></div>`;
+  return `<div class="glass set-card" id="referralCard"><div class="set-card-title"><span class="ci">${ico("profile")}</span>Refer a friend — earn RP</div>
+    <div class="set-fhint" style="margin:4px 0 14px 28px">10 friends install Chud + verify in Discord → <b>$10 in RP</b>. Repeatable every 10.</div>
+    ${codeRow}${inviteRow}${claimRow}</div>`;
+}
+function wireReferralCard() {
+  document.querySelectorAll("[data-refcopy]").forEach((b) => (b.onclick = () => {
+    try { navigator.clipboard.writeText(b.dataset.refcopy); toast("Copied", b.dataset.refcopy, "success"); } catch {}
+  }));
+  const mint = document.getElementById("referMintBtn");
+  if (mint) mint.onclick = async () => {
+    mint.disabled = true; mint.textContent = "…";
+    try { await invoke("refer_mint"); await loadReferral(); renderSettings(); toast("Referral code ready", "Share it with friends to earn RP.", "success"); }
+    catch (e) { mint.disabled = false; mint.textContent = "Refer a friend"; toast("Couldn't get a code", String(e || ""), "danger"); }
+  };
+  const claimBtn = document.getElementById("referClaimBtn");
+  if (claimBtn) claimBtn.onclick = async () => {
+    const inp = document.getElementById("referClaimInput");
+    const code = (inp && inp.value || "").trim().toUpperCase();
+    if (!code) { toast("Enter a code", "Paste your friend's CHUD- code.", "warning"); return; }
+    claimBtn.disabled = true;
+    try { await invoke("refer_claim", { refCode: code }); await loadReferral(); renderSettings(); toast("You're set!", "Verify your install code in Discord to count.", "success"); }
+    catch (e) { claimBtn.disabled = false; toast("Code not accepted", String(e || ""), "danger"); }
+  };
+}
+
 function settingsHtml() {
   const card = (title, glyph, body) => `<div class="glass set-card"><div class="set-card-title"><span class="ci">${ico(glyph)}</span>${title}</div><div class="set-list">${body}</div></div>`;
   return `<div class="set-wrap">
   ${appearanceCard()}
+  ${referralCard()}
   ${card("Auto-Accept", "bolt", [
     setField("Check interval", "Queue poll cadence", numInput("auto_accept", "check_interval", "s")),
     setField("Retry delay", "Reconnect backoff (base)", numInput("auto_accept", "retry_delay", "s")),
@@ -548,9 +593,11 @@ function settingsHtml() {
 async function renderSettings() {
   if (!cfg) await loadConfig();
   try { appearOffline = !!(await invoke("get_appear_offline")); } catch { /* keep last */ }
+  if (referralState === null) await loadReferral();
   const p = document.getElementById("page");
   p.innerHTML = settingsHtml();
   p.querySelectorAll("[data-theme-card]").forEach((c) => (c.onclick = () => applyTheme(c.dataset.themeCard)));
+  wireReferralCard();
   p.querySelectorAll("input").forEach((el) => (el.onchange = () => {
     const s = el.dataset.sec, k = el.dataset.key; cfg[s] = cfg[s] || {};
     if (el.type === "number") {

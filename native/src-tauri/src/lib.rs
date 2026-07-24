@@ -13,6 +13,7 @@ mod lcu;
 mod lcu_ws;
 mod net;
 mod profile;
+mod referral;
 mod runes;
 mod safety;
 mod safety_manager;
@@ -335,6 +336,8 @@ fn save_config(cfg: serde_json::Value, app: AppHandle, state: tauri::State<Arc<A
                 // topbar/Appearance pickers, not the Save button), so a stale
                 // general-settings snapshot must not revert it.
                 parsed.ui = c.ui.clone();
+                // Referral state is owned by the refer_* commands (opt-in).
+                parsed.referral = c.referral.clone();
                 parsed.auto_accept.enabled = c.auto_accept.enabled;
                 // Same clamp `Config::load` applies, so a bad interval can't be
                 // persisted (a stale/oversized monitor interval fails injection
@@ -421,6 +424,38 @@ fn skins_repair_mod(rel_path: String) -> Result<String, String> {
     }
     crate::skins::broken_mods::unflag(&rel_path);
     Ok(summary)
+}
+
+/// Referral state for the UI: this machine's referrer code, the install code (if
+/// referred), whether activated, and the Discord invite.
+#[tauri::command]
+fn refer_state(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    let r = state.config.lock_safe().referral.clone();
+    json!({ "ref_code": r.ref_code, "install_code": r.install_code, "activated": r.activated, "invite_url": "https://discord.gg/4MyEDy4npM" })
+}
+
+/// Mint (or fetch) this machine's referrer code from the worker; persist it.
+#[tauri::command]
+async fn refer_mint(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let v = referral::mint().await?;
+    if let Some(code) = v.get("ref_code").and_then(|c| c.as_str()) {
+        let mut c = state.config.lock_safe();
+        c.referral.ref_code = code.to_string();
+        let _ = c.save();
+    }
+    Ok(v)
+}
+
+/// Claim a friend's referral code; persist the returned install code.
+#[tauri::command]
+async fn refer_claim(ref_code: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let v = referral::claim(ref_code.trim()).await?;
+    if let Some(ic) = v.get("install_code").and_then(|c| c.as_str()) {
+        let mut c = state.config.lock_safe();
+        c.referral.install_code = ic.to_string();
+        let _ = c.save();
+    }
+    Ok(v)
 }
 
 /// Open an external attribution link (e.g. "View on RuneForge") in the
@@ -3538,6 +3573,9 @@ pub fn run() {
             skins_broken_mods,
             skins_clear_broken,
             skins_repair_mod,
+            refer_state,
+            refer_mint,
+            refer_claim,
             get_profile,
             skins_get_state,
             skins_set_overlay_card_cols,

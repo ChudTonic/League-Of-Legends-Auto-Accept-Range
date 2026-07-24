@@ -17,6 +17,7 @@ const BUILT_IN_HOSTS: &[&str] = &[
     "chud-skins.jivy26.workers.dev",
     "chud-party-relay.jivy26.workers.dev",
     "chud-telemetry.jivy26.workers.dev",
+    "chud-referral.jivy26.workers.dev",
     "github.com",
     "api.github.com",
     "raw.githubusercontent.com",
